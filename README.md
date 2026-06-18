@@ -20,7 +20,7 @@ brew install poppler ocrmypdf
 ## Setup
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/NMJlam/Anki-Rag-workflow.git
 cd anki-rag
 uv sync
 ```
@@ -121,13 +121,6 @@ Make sure Anki is open, then run:
 
 ```bash
 uv run anki-commit
-```
-
-Useful flags:
-
-```bash
-uv run anki-commit --skip-backup
-uv run anki-commit --skip-sync
 ```
 
 ## Offline Smoke Test

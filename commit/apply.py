@@ -207,9 +207,6 @@ def _find_rel_path_in_vault(note_title: str, vault: Path) -> Optional[str]:
 def apply_commit(
     vault_path: str | Path,
     state_path: str | Path | None = None,
-    *,
-    skip_backup: bool = False,
-    skip_sync: bool = False,
 ) -> None:
     """Full commit flow: parse → backup → apply → update state → log."""
     if state_path is None:
@@ -251,18 +248,17 @@ def apply_commit(
     # ------------------------------------------------------------------
     # 2. Backup
     # ------------------------------------------------------------------
-    if not skip_backup:
-        print("  backing up Anki collection ...")
-        try:
-            backup_path = export_package()
-            backup_file = Path(backup_path)
-            if not backup_file.exists() or backup_file.stat().st_size == 0:
-                raise AnkiConnectError("Backup file is empty or missing")
-            print(f"  backup saved: {backup_path}")
-        except AnkiConnectError as exc:
-            print(f"  BACKUP FAILED: {exc}")
-            print("  aborting commit — fix the issue and retry")
-            return
+    print("  backing up Anki collection ...")
+    try:
+        backup_path = export_package()
+        backup_file = Path(backup_path)
+        if not backup_file.exists() or backup_file.stat().st_size == 0:
+            raise AnkiConnectError("Backup file is empty or missing")
+        print(f"  backup saved: {backup_path}")
+    except AnkiConnectError as exc:
+        print(f"  BACKUP FAILED: {exc}")
+        print("  aborting commit — fix the issue and retry")
+        return
 
     # ------------------------------------------------------------------
     # 3. Ensure model + decks
@@ -451,12 +447,11 @@ def apply_commit(
     # ------------------------------------------------------------------
     # 7. Sync to AnkiWeb
     # ------------------------------------------------------------------
-    if not skip_sync:
-        try:
-            sync()
-            print("  AnkiWeb sync triggered")
-        except AnkiConnectError as exc:
-            print(f"  WARNING: sync failed: {exc}")
+    try:
+        sync()
+        print("  AnkiWeb sync triggered")
+    except AnkiConnectError as exc:
+        print(f"  WARNING: sync failed: {exc}")
 
     print("  commit complete")
 
