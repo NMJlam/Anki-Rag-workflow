@@ -14,8 +14,8 @@ import sys
 from difflib import SequenceMatcher
 from pathlib import Path
 
-from cli.check_markers import CALLOUT_MARKER
-from reason.check import check_all_notes, ClaimIssue, NoteReport
+from cli.check_markers import BROKEN_LINK_MARKER, CALLOUT_MARKER
+from reason.check import check_all_notes, check_broken_links, ClaimIssue, NoteReport
 from sync.config import load_app_config
 
 # ANSI colors for terminal output
@@ -98,11 +98,12 @@ def _claim_line_score(line: str, claim: str) -> float:
 
 def _strip_old_callouts(content: str) -> str:
     """Remove all callout blocks from previous check runs."""
+    markers = {_CALLOUT_MARKER, BROKEN_LINK_MARKER}
     lines = content.split("\n")
     result = []
     i = 0
     while i < len(lines):
-        if lines[i].strip() == _CALLOUT_MARKER:
+        if lines[i].strip() in markers:
             # Skip the marker and all following `> ` lines
             i += 1
             while i < len(lines) and lines[i].startswith(">"):
@@ -167,6 +168,43 @@ def _inject_callouts(
     note_file.write_text(new_content)
 
 
+def _build_broken_link_callout(issues: list[ClaimIssue]) -> str:
+    """Build a single callout listing all broken wikilinks in a note."""
+    links = ", ".join(issue.claim for issue in issues)
+    lines = [
+        BROKEN_LINK_MARKER,
+        f"> [!warning] Broken link{'s' if len(issues) > 1 else ''}: {links}",
+        f"> Linked note{'s were' if len(issues) > 1 else ' was'} deleted — this note may need updating or removal",
+    ]
+    return "\n".join(lines)
+
+
+def _inject_broken_link_callouts(
+    vault_path: Path,
+    report: NoteReport,
+) -> None:
+    """Insert a broken-link callout at the top of the note body."""
+    note_file = vault_path / report.rel_path
+    content = note_file.read_text(errors="replace")
+
+    callout = _build_broken_link_callout(report.issues)
+
+    # Insert after frontmatter if present
+    m = _FRONTMATTER_RE.match(content)
+    if m:
+        insert_at = m.end()
+        before = content[:insert_at]
+        after = content[insert_at:]
+        # Ensure blank line separation
+        if after and not after.startswith("\n"):
+            after = "\n" + after
+        new_content = before + "\n" + callout + "\n" + after
+    else:
+        new_content = callout + "\n\n" + content
+
+    note_file.write_text(new_content)
+
+
 def _print_report(reports: list[NoteReport]) -> int:
     """Print the check report to terminal. Returns total issue count."""
     total = 0
@@ -199,6 +237,19 @@ def check(
     else:
         print("Notes:  all")
 
+    # Check for broken wikilinks (no LLM needed)
+    link_reports = check_broken_links(vault_path, paths=note_paths)
+    link_injected = 0
+    for report in link_reports:
+        if report.issues:
+            _inject_broken_link_callouts(vault_path, report)
+            link_injected += 1
+
+    broken_link_count = sum(len(r.issues) for r in link_reports)
+    if broken_link_count:
+        print(f"  {broken_link_count} broken link(s) in {link_injected} note(s)")
+
+    # Check for factual errors (LLM + RAG)
     reports = check_all_notes(
         vault_path,
         config_path=config_path,
@@ -214,6 +265,7 @@ def check(
 
     # Print summary
     total = _print_report(reports)
+    total += broken_link_count
     notes_checked = len(reports)
 
     print(f"\n{_BOLD}{'─' * 50}{_RESET}")
@@ -223,13 +275,13 @@ def check(
         print(f"{_GREEN}No issues found.{_RESET}")
     else:
         errors = sum(1 for r in reports for i in r.issues if i.severity == "error")
-        warnings = total - errors
+        warnings = total - errors + broken_link_count
         parts = []
         if errors:
             parts.append(f"{_RED}{errors} error(s){_RESET}")
         if warnings:
             parts.append(f"{_YELLOW}{warnings} warning(s){_RESET}")
-        print(f"Found {', '.join(parts)} — inserted callouts into {injected} note(s)")
+        print(f"Found {', '.join(parts)} — inserted callouts into {injected + link_injected} note(s)")
 
 
 def main() -> None:

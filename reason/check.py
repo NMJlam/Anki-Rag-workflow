@@ -11,6 +11,7 @@ time sharing actually shares CPU *time*, not space).
 """
 from __future__ import annotations
 
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -177,6 +178,79 @@ def check_note(
         report.issues.append(issue)
 
     return report
+
+
+_WIKILINK_RE = re.compile(r"\[\[([^\]|#]+?)(?:[|#][^\]]*?)?\]\]")
+
+
+def check_broken_links(
+    vault_path: str | Path,
+    *,
+    paths: Optional[List[str]] = None,
+) -> List[NoteReport]:
+    """Find notes with [[wikilinks]] pointing to notes that don't exist.
+
+    Returns NoteReport objects with warning-severity issues for each
+    broken link — the referenced note was deleted or never existed.
+    """
+    from sync.vault import IGNORE_DIRS, IGNORE_FILES
+
+    vault = Path(vault_path).resolve()
+    if not vault.is_dir():
+        raise FileNotFoundError(f"Vault not found: {vault}")
+
+    # Build set of all note stems (case-insensitive, Obsidian-style)
+    note_stems: set[str] = set()
+    for md_file in vault.rglob("*.md"):
+        rel = md_file.relative_to(vault)
+        if any(part in IGNORE_DIRS for part in rel.parts):
+            continue
+        if rel.name in IGNORE_FILES:
+            continue
+        note_stems.add(md_file.stem.lower())
+
+    # Determine which files to scan
+    if paths:
+        files = [(vault / rel, rel) for rel in paths if (vault / rel).exists()]
+    else:
+        files = []
+        for md_file in sorted(vault.rglob("*.md")):
+            rel = md_file.relative_to(vault)
+            if any(part in IGNORE_DIRS for part in rel.parts):
+                continue
+            if rel.name in IGNORE_FILES:
+                continue
+            files.append((md_file, str(rel).replace("\\", "/")))
+
+    reports: List[NoteReport] = []
+    for md_file, rel_str in files:
+        content = md_file.read_text(errors="replace") if not isinstance(md_file, str) else Path(md_file).read_text(errors="replace")
+        links = _WIKILINK_RE.findall(content)
+        broken = []
+        for link in links:
+            target = link.strip()
+            if target.lower() not in note_stems:
+                broken.append(target)
+        if broken:
+            # Deduplicate while preserving order
+            seen: set[str] = set()
+            unique_broken: list[str] = []
+            for b in broken:
+                if b.lower() not in seen:
+                    seen.add(b.lower())
+                    unique_broken.append(b)
+            report = NoteReport(rel_path=rel_str if isinstance(rel_str, str) else str(rel_str))
+            for target in unique_broken:
+                report.issues.append(ClaimIssue(
+                    claim=f"[[{target}]]",
+                    verdict="broken link",
+                    correction=f"[[{target}]] does not exist — this note may need updating",
+                    citation=None,
+                    severity="warning",
+                ))
+            reports.append(report)
+
+    return reports
 
 
 def check_all_notes(
