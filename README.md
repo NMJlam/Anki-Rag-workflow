@@ -140,6 +140,18 @@ Open the diff files in Obsidian (or any editor). You can:
 
 Only entries still present when you run commit will be applied.
 
+If the proposal run is not useful, reject it instead:
+
+```bash
+uv run reject
+```
+
+This marks the pending cards as rejected in `data/card_state.sqlite`, removes
+`New cards.md` / `Changed cards.md`, and clears proposal markers from
+`sync_index.json` without updating the committed note hash. The next proposal run
+therefore scans from the last committed state and includes the rejected notes
+again if their current content still differs, along with any newer notes you add.
+
 ### 4. Commit to Anki
 
 ```bash
@@ -154,9 +166,10 @@ This will:
 4. Create any needed decks
 5. Delete old cards (for changed proposals) and add new ones via AnkiConnect
 6. Update `sync_index.json` with the new card mappings
-7. Write a timestamped log to `Anki sync log.md`
-8. Clean up the diff files
-9. Trigger AnkiWeb sync
+7. Mark the applied cards as committed in `data/card_state.sqlite`
+8. Write a timestamped log to `Anki sync log.md`
+9. Clean up the diff files
+10. Trigger AnkiWeb sync
 
 **Flags:**
 

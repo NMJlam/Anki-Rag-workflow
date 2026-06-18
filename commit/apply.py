@@ -22,6 +22,11 @@ from pathlib import Path
 from typing import List, Optional
 
 from sync.index import CardEntry, NoteEntry, SyncIndex, load_index, save_index
+from sync.state import (
+    CardState,
+    default_state_path,
+    mark_cards_committed,
+)
 
 from .anki import (
     AnkiConnectError,
@@ -150,6 +155,23 @@ def _content_hash(source: str, target: str) -> str:
     return hashlib.sha256(combined.encode()).hexdigest()
 
 
+def _card_state(
+    card: ParsedCard,
+    *,
+    rel_path: str,
+    content_hash: str,
+) -> CardState:
+    return CardState(
+        note_rel_path=rel_path,
+        note_title=card.note_title,
+        deck=card.deck,
+        question=card.question,
+        answer=card.answer,
+        source=card.source,
+        content_hash=content_hash,
+    )
+
+
 # ------------------------------------------------------------------
 # Resolve note title → rel_path in the index
 # ------------------------------------------------------------------
@@ -253,6 +275,8 @@ def apply_commit(
     log_entries: List[str] = []
     log_entries.append(f"## Commit {ts}")
     log_entries.append("")
+    committed_states: List[CardState] = []
+    committed_note_ids: dict[str, int] = {}
 
     # --- Changed notes: delete ALL old cards for affected notes, then add new ---
     changed_note_titles = {c.note_title for c in changed_cards}
@@ -306,6 +330,10 @@ def apply_commit(
                 source=card.source,
             ))
             note_entry.last_processed = now.isoformat()
+            committed_states.append(
+                _card_state(card, rel_path=rel_path, content_hash=c_hash)
+            )
+            committed_note_ids[c_hash] = note_id
 
         log_entries.append(
             f"++ added card {note_id} to [[{card.note_title}]] · deck: {card.deck}"
@@ -353,6 +381,10 @@ def apply_commit(
         ))
         note_entry.last_processed = now.isoformat()
         note_entry.deck = card.deck
+        committed_states.append(
+            _card_state(card, rel_path=rel_path, content_hash=c_hash)
+        )
+        committed_note_ids[c_hash] = note_id
 
         log_entries.append(
             f"++ added card {note_id} to [[{card.note_title}]] · deck: {card.deck}"
@@ -361,16 +393,20 @@ def apply_commit(
     # ------------------------------------------------------------------
     # 5. Promote proposed_hash → hash for committed notes, then save
     # ------------------------------------------------------------------
-    committed_titles = {c.note_title for c in new_cards + changed_cards}
-    for title in committed_titles:
-        rel_path = _resolve_rel_path(title, index)
-        if not rel_path:
-            rel_path = _find_rel_path_in_vault(title, vault)
-        if rel_path:
-            note_entry = index.get_note(rel_path)
-            if note_entry and note_entry.proposed_hash:
-                note_entry.hash = note_entry.proposed_hash
-                note_entry.proposed_hash = None
+    committed_paths = {c.note_rel_path for c in committed_states}
+    for rel_path in committed_paths:
+        note_entry = index.get_note(rel_path)
+        if note_entry and note_entry.proposed_hash:
+            note_entry.hash = note_entry.proposed_hash
+            note_entry.proposed_hash = None
+
+    if committed_states:
+        committed_count = mark_cards_committed(
+            default_state_path(index_path),
+            committed_states,
+            anki_note_ids=committed_note_ids,
+        )
+        print(f"  recorded {committed_count} committed card(s)")
 
     save_index(index, index_path)
     print(f"  updated {index_path}")

@@ -16,6 +16,7 @@ from pathlib import Path
 from reason.crosscheck import process_all_notes
 from reason.emit import write_diff_files
 from sync.index import NoteEntry, load_index, save_index
+from sync.state import default_state_path, record_proposals
 from sync.vault import scan_vault
 
 
@@ -52,6 +53,8 @@ def propose(
 
     # Write diff files
     write_diff_files(proposals, vault_path)
+    recorded = record_proposals(default_state_path(index_path), proposals)
+    print(f"  recorded {recorded} pending card(s)")
 
     # Mark notes as proposed (don't update hash — that happens at commit)
     now = datetime.now(timezone.utc).isoformat()

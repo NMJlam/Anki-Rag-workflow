@@ -16,6 +16,8 @@ dependencies = [
 [project.scripts]
 anki-propose = "cli.propose:main"
 anki-commit = "cli.commit:main"
+anki-reject = "cli.reject:main"
+reject = "cli.reject:main"
 anki-check-notes = "cli.check:main"
 
 [build-system]
