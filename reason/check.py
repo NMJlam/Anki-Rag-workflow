@@ -224,7 +224,7 @@ def check_broken_links(
 
     reports: List[NoteReport] = []
     for md_file, rel_str in files:
-        content = md_file.read_text(errors="replace") if not isinstance(md_file, str) else Path(md_file).read_text(errors="replace")
+        content = md_file.read_text(errors="replace")
         links = _WIKILINK_RE.findall(content)
         broken = []
         for link in links:
@@ -239,7 +239,7 @@ def check_broken_links(
                 if b.lower() not in seen:
                     seen.add(b.lower())
                     unique_broken.append(b)
-            report = NoteReport(rel_path=rel_str if isinstance(rel_str, str) else str(rel_str))
+            report = NoteReport(rel_path=rel_str)
             for target in unique_broken:
                 report.issues.append(ClaimIssue(
                     claim=f"[[{target}]]",
