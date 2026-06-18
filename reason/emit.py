@@ -1,4 +1,4 @@
-"""Write New cards.md and Changed cards.md for the cloze-style card pipeline.
+"""Write New/Changed/Deleted cards.md for the cloze-style card pipeline.
 
 The format is the contract between the propose step and the commit parser.
 
@@ -9,7 +9,9 @@ from __future__ import annotations
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List
+from typing import List, Tuple
+
+from sync.index import NoteEntry
 
 from .crosscheck import CardProposal, NoteProposals
 
@@ -114,6 +116,54 @@ def emit_changed_cards(
 
 
 # ------------------------------------------------------------------
+# Deleted cards.md
+# ------------------------------------------------------------------
+
+def emit_deleted_cards(
+    deleted_notes: List[Tuple[str, NoteEntry]],
+    *,
+    timestamp: str | None = None,
+) -> str:
+    """Generate the content of Deleted cards.md."""
+    ts = timestamp or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+    total_cards = sum(len(entry.cards) for _, entry in deleted_notes)
+
+    lines = [
+        "# Deleted Cards — pending approval",
+        f"# run {ts} · {total_cards} card(s) from {len(deleted_notes)} deleted note(s) · "
+        "remove entries to keep specific cards, then run `commit`",
+        "",
+    ]
+
+    for rel_path, entry in deleted_notes:
+        note_title = Path(rel_path).stem
+        deck_str = entry.deck or "unknown"
+        for card in entry.cards:
+            lines.append(
+                f"## -- delete card {card.anki_note_id} from "
+                f"[[{note_title}]]      deck: {deck_str}"
+            )
+            lines.append(f"Q: {card.front}")
+            lines.append(f"A: {card.answer}")
+            lines.append("")
+
+    return "\n".join(lines)
+
+
+def write_deleted_file(
+    deleted_notes: List[Tuple[str, NoteEntry]],
+    vault_path: str | Path,
+    *,
+    timestamp: str | None = None,
+) -> None:
+    """Write Deleted cards.md into the vault root."""
+    content = emit_deleted_cards(deleted_notes, timestamp=timestamp)
+    deleted_file = Path(vault_path) / "Deleted cards.md"
+    deleted_file.write_text(content)
+    print(f"  wrote {deleted_file}")
+
+
+# ------------------------------------------------------------------
 # Write to vault
 # ------------------------------------------------------------------
 
@@ -129,14 +179,23 @@ def write_diff_files(
     new_content = emit_new_cards(proposals, vault_path, timestamp=timestamp)
     changed_content = emit_changed_cards(proposals, vault_path, timestamp=timestamp)
 
+    new_notes = [p for p in proposals if p.is_new_note and p.proposals]
+    changed_notes = [p for p in proposals if not p.is_new_note and p.proposals]
+
     new_file = vault / "New cards.md"
     changed_file = vault / "Changed cards.md"
 
-    new_file.write_text(new_content)
-    changed_file.write_text(changed_content)
+    if new_notes:
+        new_file.write_text(new_content)
+        print(f"  wrote {new_file}")
+    elif new_file.exists():
+        new_file.unlink()
 
-    print(f"  wrote {new_file}")
-    print(f"  wrote {changed_file}")
+    if changed_notes:
+        changed_file.write_text(changed_content)
+        print(f"  wrote {changed_file}")
+    elif changed_file.exists():
+        changed_file.unlink()
 
 
 # ------------------------------------------------------------------

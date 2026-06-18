@@ -13,7 +13,6 @@ Run standalone:  python -m commit.apply [vault_path] [state_path]
 """
 from __future__ import annotations
 
-import hashlib
 import re
 import sys
 from dataclasses import dataclass, field
@@ -32,6 +31,7 @@ from sync.index import (
 )
 from sync.state import (
     CardState,
+    card_content_hash,
     default_state_path,
     mark_cards_committed,
 )
@@ -93,6 +93,33 @@ _A_RE = re.compile(r"^A:\s*(.+)$")
 # Matches: source: "..."
 _SOURCE_RE = re.compile(r'^source:\s*"(.+)"\s*$')
 
+# Matches: ## -- delete card 123 from [[NoteTitle]]      deck: SomeDeck
+_DELETE_HEADER_RE = re.compile(
+    r"^##\s*--\s*delete\s+card\s+(\d+)\s+from\s*\[\[(.+?)\]\]\s+deck:\s*(.+)$"
+)
+
+
+@dataclass
+class ParsedDeletion:
+    """A card parsed from Deleted cards.md."""
+    anki_note_id: int
+    note_title: str
+    deck: str
+
+
+def parse_deleted_cards(content: str) -> List[ParsedDeletion]:
+    """Parse Deleted cards.md into deletion entries."""
+    deletions: List[ParsedDeletion] = []
+    for line in content.split("\n"):
+        m = _DELETE_HEADER_RE.match(line)
+        if m:
+            deletions.append(ParsedDeletion(
+                anki_note_id=int(m.group(1)),
+                note_title=m.group(2),
+                deck=m.group(3).strip(),
+            ))
+    return deletions
+
 
 def parse_diff_cards(content: str) -> List[ParsedCard]:
     """Parse a diff file (New cards.md or Changed cards.md) into cards.
@@ -110,11 +137,11 @@ def parse_diff_cards(content: str) -> List[ParsedCard]:
     while i < len(lines):
         line = lines[i]
 
-        # Skip audit/comment sections
-        if line.startswith("### ") or line.startswith("# "):
-            if not line.startswith("## "):
-                i += 1
-                continue
+        # Skip non-card headers: # (title) and ### or deeper (audit sections)
+        # Card-level ## headers are matched by regexes below
+        if line.startswith("### ") or (line.startswith("# ") and not line.startswith("## ")):
+            i += 1
+            continue
 
         cm = _REPLACE_CALLOUT_RE.match(line)
         if cm:
@@ -188,14 +215,6 @@ def parse_diff_cards(content: str) -> List[ParsedCard]:
 
     return cards
 
-
-# ------------------------------------------------------------------
-# Content hash (stable identity: source + target)
-# ------------------------------------------------------------------
-
-def _content_hash(source: str, target: str) -> str:
-    combined = source + "\n" + target
-    return hashlib.sha256(combined.encode()).hexdigest()
 
 
 def _card_state(
@@ -274,9 +293,11 @@ def apply_commit(
     # ------------------------------------------------------------------
     new_file = vault / "New cards.md"
     changed_file = vault / "Changed cards.md"
+    deleted_file = vault / "Deleted cards.md"
 
     new_cards: List[ParsedCard] = []
     changed_cards: List[ParsedCard] = []
+    deletions: List[ParsedDeletion] = []
 
     if new_file.exists():
         new_cards = parse_diff_cards(new_file.read_text())
@@ -290,21 +311,37 @@ def apply_commit(
     else:
         print("  Changed cards.md not found — skipping")
 
-    total = len(new_cards) + len(changed_cards)
+    if deleted_file.exists():
+        deletions = parse_deleted_cards(deleted_file.read_text())
+        print(f"  parsed {len(deletions)} deletion(s) from Deleted cards.md")
+
+    total = len(new_cards) + len(changed_cards) + len(deletions)
     if total == 0:
         print("  nothing to commit")
         return
 
     # ------------------------------------------------------------------
-    # 2. Backup
+    # 2. Compute affected decks + backup each one
     # ------------------------------------------------------------------
+    needed_decks: set[str] = set()
+    for c in new_cards:
+        if c.deck:
+            needed_decks.add(c.deck)
+    for c in changed_cards:
+        if c.deck:
+            needed_decks.add(c.deck)
+    for d in deletions:
+        if d.deck:
+            needed_decks.add(d.deck)
+
     print("  backing up Anki collection ...")
     try:
-        backup_path = export_package()
-        backup_file = Path(backup_path)
-        if not backup_file.exists() or backup_file.stat().st_size == 0:
-            raise AnkiConnectError("Backup file is empty or missing")
-        print(f"  backup saved: {backup_path}")
+        for deck in sorted(needed_decks):
+            backup_path = export_package(deck=deck)
+            backup_file = Path(backup_path)
+            if not backup_file.exists() or backup_file.stat().st_size == 0:
+                raise AnkiConnectError(f"Backup file is empty or missing for deck {deck}")
+            print(f"  backup saved: {backup_path}  (deck: {deck})")
     except AnkiConnectError as exc:
         print(f"  BACKUP FAILED: {exc}")
         print("  aborting commit — fix the issue and retry")
@@ -314,14 +351,6 @@ def apply_commit(
     # 3. Ensure model + decks
     # ------------------------------------------------------------------
     ensure_model()
-
-    needed_decks: set[str] = set()
-    for c in new_cards:
-        if c.deck:
-            needed_decks.add(c.deck)
-    for c in changed_cards:
-        if c.deck:
-            needed_decks.add(c.deck)
 
     for deck in needed_decks:
         create_deck(deck)
@@ -341,7 +370,7 @@ def apply_commit(
             print(f"  SKIPPING [[{card.note_title}]] — no deck")
             continue
 
-        c_hash = _content_hash(card.source, card.answer)
+        c_hash = card_content_hash(card.source, card.answer)
         rel_path = _resolve_rel_path(card.note_title, index)
         source_note = rel_path or card.note_title
 
@@ -408,7 +437,7 @@ def apply_commit(
             print(f"  SKIPPING [[{card.note_title}]] — no deck (mark ← pick)")
             continue
 
-        c_hash = _content_hash(card.source, card.answer)
+        c_hash = card_content_hash(card.source, card.answer)
         rel_path = (
             _resolve_rel_path(card.note_title, index)
             or _find_rel_path_in_vault(card.note_title, vault)
@@ -456,6 +485,28 @@ def apply_commit(
             f"++ added card {note_id} to [[{card.note_title}]] · deck: {card.deck}"
         )
 
+    # --- Deletions ---
+    if deletions:
+        del_ids = [d.anki_note_id for d in deletions]
+        try:
+            delete_notes(del_ids)
+            print(f"  deleted {len(del_ids)} card(s) from Anki")
+        except AnkiConnectError as exc:
+            print(f"  WARNING: deletion failed: {exc}")
+
+        for d in deletions:
+            rel_path = _resolve_rel_path(d.note_title, index)
+            if rel_path:
+                _remove_card_from_index(
+                    index, rel_path=rel_path, anki_note_id=d.anki_note_id,
+                )
+                note_entry = index.get_note(rel_path)
+                if note_entry and not note_entry.cards:
+                    index.remove_note(rel_path)
+            log_entries.append(
+                f"-- deleted card {d.anki_note_id} from [[{d.note_title}]]"
+            )
+
     # ------------------------------------------------------------------
     # 5. Promote pending_file_hash → committed_file_hash for committed notes, then save
     # ------------------------------------------------------------------
@@ -498,6 +549,9 @@ def apply_commit(
     if changed_file.exists():
         changed_file.unlink()
         print("  removed Changed cards.md")
+    if deleted_file.exists():
+        deleted_file.unlink()
+        print("  removed Deleted cards.md")
 
     # ------------------------------------------------------------------
     # 7. Sync to AnkiWeb

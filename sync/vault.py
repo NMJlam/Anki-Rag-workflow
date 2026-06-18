@@ -20,7 +20,7 @@ from .index import SyncIndex, load_index, state_db_path
 
 # Directories and files to skip when walking the vault.
 IGNORE_DIRS = {".obsidian", "templates"}
-IGNORE_FILES = {"New cards.md", "Changed cards.md", "Anki sync log.md"}
+IGNORE_FILES = {"New cards.md", "Changed cards.md", "Deleted cards.md", "Anki sync log.md"}
 
 # Regex for YAML frontmatter block at the top of a note.
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---", re.DOTALL)

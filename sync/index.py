@@ -332,7 +332,7 @@ def save_index(index: SyncIndex, path: str | Path) -> None:
                 )
 
             for card in entry.cards:
-                existing = conn.execute(
+                existing_card = conn.execute(
                     """
                     SELECT id FROM cards
                      WHERE note_rel_path = ?
@@ -342,7 +342,7 @@ def save_index(index: SyncIndex, path: str | Path) -> None:
                     """,
                     (rel_path, card.content_hash),
                 ).fetchone()
-                if existing:
+                if existing_card:
                     conn.execute(
                         """
                         UPDATE cards
@@ -363,7 +363,7 @@ def save_index(index: SyncIndex, path: str | Path) -> None:
                             card.concept_key,
                             card.front,
                             card.anki_note_id,
-                            existing[0],
+                            existing_card[0],
                         ),
                     )
                 else:

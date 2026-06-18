@@ -9,7 +9,6 @@ Run standalone:  python -m reason.crosscheck [vault_path] [state_path]
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import sys
 from dataclasses import dataclass, field
@@ -20,6 +19,7 @@ from rag.query import retrieve
 from sync.anki_source import AnkiConnectError, regular_cards_for_deck
 from sync.config import load_app_config
 from sync.index import SyncIndex, load_index, state_db_path
+from sync.state import card_content_hash
 from sync.vault import ChangedNote, VaultDiff, scan_vault
 
 from .llm import chat_json, DEFAULT_MODEL
@@ -230,10 +230,7 @@ For "keep" or "replace", existing_anki_note_id must be the matched existing card
 # Core logic
 # ------------------------------------------------------------------
 
-def _card_identity_hash(source: str, target: str) -> str:
-    """Stable content hash from (source + target) — survives Q rewording."""
-    combined = source + "\n" + target
-    return hashlib.sha256(combined.encode()).hexdigest()
+_card_identity_hash = card_content_hash  # back-compat alias for tests
 
 
 def _normalize_text(text: str) -> str:
@@ -253,7 +250,7 @@ def _classify_card_change(
     used_existing_ids: set[int],
 ) -> tuple[str, Optional[Dict]]:
     """Return add/replace/keep for a proposed card against committed cards."""
-    content_hash = _card_identity_hash(source, answer)
+    content_hash = card_content_hash(source, answer)
     for existing in existing_cards:
         anki_note_id = existing.get("anki_note_id")
         if existing.get("content_hash") == content_hash:

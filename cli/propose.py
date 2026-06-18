@@ -15,7 +15,7 @@ from pathlib import Path
 
 from cli.check_markers import CALLOUT_MARKER
 from reason.crosscheck import process_all_notes
-from reason.emit import write_diff_files
+from reason.emit import write_deleted_file, write_diff_files
 from sync.anki_source import AnkiConnectError, refresh_committed_cards_from_anki
 from sync.config import load_app_config
 from sync.index import NoteEntry, load_index, save_index, state_db_path
@@ -91,8 +91,23 @@ def propose(
     diff = scan_vault(vault_path, index)
     print(f"  {diff.summary()}")
 
+    # Propose deletions for notes removed from the vault
+    if diff.deleted:
+        deleted_with_cards = []
+        for dn in diff.deleted:
+            entry = index.get_note(dn.rel_path)
+            if entry and entry.cards:
+                deleted_with_cards.append((dn.rel_path, entry))
+        if deleted_with_cards:
+            total_del = sum(len(e.cards) for _, e in deleted_with_cards)
+            print(f"  {total_del} card(s) from {len(deleted_with_cards)} deleted note(s) proposed for deletion")
+            write_deleted_file(deleted_with_cards, vault_path)
+
     if not diff.changed:
-        print("  nothing changed — skipping")
+        if diff.deleted:
+            print("  no content changes — review Deleted cards.md, then run: uv run anki-commit")
+        else:
+            print("  nothing changed — skipping")
         return
 
     # Generate cards from propositions
