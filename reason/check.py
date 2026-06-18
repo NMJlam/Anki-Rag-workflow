@@ -15,7 +15,6 @@ import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
 
 from rag.query import retrieve
 from .llm import chat_json, DEFAULT_MODEL
@@ -31,7 +30,7 @@ class ClaimIssue:
     claim: str                # what the student wrote
     verdict: str              # "wrong", "imprecise", "unsupported"
     correction: str           # what the textbook actually says
-    citation: Optional[str]   # e.g. "OSTEP · vm-tlbs · p.7"
+    citation: str | None       # e.g. "OSTEP · vm-tlbs · p.7"
     severity: str             # "error" or "warning"
 
 
@@ -39,7 +38,7 @@ class ClaimIssue:
 class NoteReport:
     """All issues found in a single note."""
     rel_path: str
-    issues: List[ClaimIssue] = field(default_factory=list)
+    issues: list[ClaimIssue] = field(default_factory=list)
 
 
 # ------------------------------------------------------------------
@@ -107,7 +106,7 @@ def extract_claims(
     note_content: str,
     *,
     model: str = DEFAULT_MODEL,
-) -> List[Dict]:
+) -> list[dict]:
     """LLM extracts factual claims from a note."""
     result = chat_json([
         {"role": "system", "content": EXTRACT_CLAIMS_SYSTEM},
@@ -118,10 +117,10 @@ def extract_claims(
 
 def check_claim(
     claim: str,
-    passages: List[Dict],
+    passages: list[dict],
     *,
     model: str = DEFAULT_MODEL,
-) -> Dict:
+) -> dict:
     """Check a single claim against RAG passages."""
     passage_text = "\n\n".join(
         f"[{p['citation']}]\n{p['text']}" for p in passages
@@ -186,8 +185,8 @@ _WIKILINK_RE = re.compile(r"\[\[([^\]|#]+?)(?:[|#][^\]]*?)?\]\]")
 def check_broken_links(
     vault_path: str | Path,
     *,
-    paths: Optional[List[str]] = None,
-) -> List[NoteReport]:
+    paths: list[str] | None = None,
+) -> list[NoteReport]:
     """Find notes with [[wikilinks]] pointing to notes that don't exist.
 
     Returns NoteReport objects with warning-severity issues for each
@@ -222,7 +221,7 @@ def check_broken_links(
                 continue
             files.append((md_file, str(rel).replace("\\", "/")))
 
-    reports: List[NoteReport] = []
+    reports: list[NoteReport] = []
     for md_file, rel_str in files:
         content = md_file.read_text(errors="replace")
         links = _WIKILINK_RE.findall(content)
@@ -258,8 +257,8 @@ def check_all_notes(
     *,
     model: str = DEFAULT_MODEL,
     config_path: str = "config.toml",
-    paths: Optional[List[str]] = None,
-) -> List[NoteReport]:
+    paths: list[str] | None = None,
+) -> list[NoteReport]:
     """Check all (or specific) notes in the vault for factual errors.
 
     If paths is given, only check those vault-relative paths.

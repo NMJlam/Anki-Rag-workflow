@@ -4,7 +4,6 @@ from __future__ import annotations
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List
 
 
 @dataclass
@@ -17,7 +16,7 @@ class BookFile:
 @dataclass
 class Book:
     name: str
-    files: List[BookFile] = field(default_factory=list)
+    files: list[BookFile] = field(default_factory=list)
 
 
 @dataclass
@@ -27,7 +26,7 @@ class Config:
     index_dir: str = "data/index"
     chunk_chars: int = 1200
     chunk_overlap: int = 200
-    books: List[Book] = field(default_factory=list)
+    books: list[Book] = field(default_factory=list)
 
 
 def _as_list(value: object) -> list:

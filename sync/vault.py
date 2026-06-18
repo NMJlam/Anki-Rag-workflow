@@ -13,7 +13,6 @@ import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
 
 from .config import load_app_config
 from .index import SyncIndex, load_index, state_db_path
@@ -32,7 +31,7 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def _extract_deck_from_frontmatter(content: str) -> Optional[str]:
+def _extract_deck_from_frontmatter(content: str) -> str | None:
     """Return the `deck:` value from YAML frontmatter, or None."""
     m = _FRONTMATTER_RE.match(content)
     if not m:
@@ -82,12 +81,12 @@ class DeletedNote:
 
 @dataclass
 class VaultDiff:
-    created: List[ChangedNote] = field(default_factory=list)
-    edited: List[ChangedNote] = field(default_factory=list)
-    deleted: List[DeletedNote] = field(default_factory=list)
+    created: list[ChangedNote] = field(default_factory=list)
+    edited: list[ChangedNote] = field(default_factory=list)
+    deleted: list[DeletedNote] = field(default_factory=list)
 
     @property
-    def changed(self) -> List[ChangedNote]:
+    def changed(self) -> list[ChangedNote]:
         """All notes that need processing (created + edited)."""
         return self.created + self.edited
 

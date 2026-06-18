@@ -7,7 +7,6 @@ page-exact. Run:  python -m rag.ingest
 from __future__ import annotations
 
 import sys
-from typing import Dict, List
 
 from pypdf import PdfReader
 
@@ -16,7 +15,7 @@ from .embedder import get_embedder
 from .store import VectorStore
 
 
-def chunk_page(text: str, chunk_chars: int, overlap: int) -> List[str]:
+def chunk_page(text: str, chunk_chars: int, overlap: int) -> list[str]:
     text = (text or "").strip()
     if not text or len(text) < 50:
         return []
@@ -37,8 +36,8 @@ def ingest(cfg: Config) -> VectorStore:
                                             if cfg.embedder.startswith("s") else {}))
     store = VectorStore(dim=embedder.dim, embedder_name=embedder.model_name)
 
-    texts: List[str] = []
-    metas: List[Dict] = []
+    texts: list[str] = []
+    metas: list[dict] = []
 
     for book in cfg.books:
         for bf in book.files:

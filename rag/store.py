@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Dict, List, Tuple
 
 import numpy as np
 
@@ -18,9 +17,9 @@ class VectorStore:
         self.dim = dim
         self.embedder_name = embedder_name
         self._vectors: np.ndarray | None = None  # (N, dim)
-        self._metas: List[Dict] = []
+        self._metas: list[dict] = []
 
-    def add(self, vectors: np.ndarray, metas: List[Dict]) -> None:
+    def add(self, vectors: np.ndarray, metas: list[dict]) -> None:
         if vectors.shape[0] != len(metas):
             raise ValueError(f"vectors count {vectors.shape[0]} != metas count {len(metas)}")
         if vectors.shape[1] != self.dim:
@@ -31,7 +30,7 @@ class VectorStore:
             self._vectors = np.vstack([self._vectors, vectors])
         self._metas.extend(metas)
 
-    def search(self, query_vec: np.ndarray, k: int = 5) -> List[Tuple[float, Dict]]:
+    def search(self, query_vec: np.ndarray, k: int = 5) -> list[tuple[float, dict]]:
         if self._vectors is None or len(self._metas) == 0:
             return []
         # cosine similarity

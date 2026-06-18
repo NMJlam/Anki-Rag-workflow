@@ -11,7 +11,7 @@ import json
 import os
 import re
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -42,7 +42,7 @@ def _strip_fences(text: str) -> str:
 
 
 def chat_json(
-    messages: List[Dict[str, str]],
+    messages: list[dict[str, str]],
     *,
     model: str = DEFAULT_MODEL,
     temperature: float = 0.3,
@@ -85,7 +85,7 @@ def chat_json(
 
 
 def chat_text(
-    messages: List[Dict[str, str]],
+    messages: list[dict[str, str]],
     *,
     model: str = DEFAULT_MODEL,
     temperature: float = 0.3,

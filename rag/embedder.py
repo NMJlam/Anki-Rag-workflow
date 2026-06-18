@@ -8,7 +8,6 @@ from __future__ import annotations
 import hashlib
 import os
 from abc import ABC, abstractmethod
-from typing import List
 
 import numpy as np
 from dotenv import load_dotenv
@@ -21,7 +20,7 @@ class Embedder(ABC):
     model_name: str
 
     @abstractmethod
-    def encode(self, texts: List[str]) -> np.ndarray:
+    def encode(self, texts: list[str]) -> np.ndarray:
         ...
 
 
@@ -35,7 +34,7 @@ class SentenceTransformerEmbedder(Embedder):
         self._model = SentenceTransformer(model_name)
         self.dim = self._model.get_embedding_dimension()
 
-    def encode(self, texts: List[str]) -> np.ndarray:
+    def encode(self, texts: list[str]) -> np.ndarray:
         return self._model.encode(texts, show_progress_bar=False,
                                   convert_to_numpy=True)
 
@@ -51,7 +50,7 @@ class HashingEmbedder(Embedder):
         self.dim = dim
         self.model_name = f"hashing-{dim}"
 
-    def encode(self, texts: List[str]) -> np.ndarray:
+    def encode(self, texts: list[str]) -> np.ndarray:
         vecs = []
         for t in texts:
             h = hashlib.md5(t.encode()).digest()

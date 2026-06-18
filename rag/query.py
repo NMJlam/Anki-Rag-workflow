@@ -8,14 +8,13 @@ Reusable:   retrieve(query, k) -> list of {score, citation, book, label,
 from __future__ import annotations
 
 import argparse
-from typing import Dict, List
 
 from .config import load_config
 from .embedder import get_embedder
 from .store import VectorStore
 
 
-def format_citation(meta: Dict) -> str:
+def format_citation(meta: dict) -> str:
     parts = [meta["book"]]
     if meta.get("label"):
         parts.append(meta["label"])
@@ -23,7 +22,7 @@ def format_citation(meta: Dict) -> str:
     return " · ".join(parts)
 
 
-def retrieve(query: str, k: int = 5, config_path: str = "config.toml") -> List[Dict]:
+def retrieve(query: str, k: int = 5, config_path: str = "config.toml") -> list[dict]:
     cfg = load_config(config_path)
     store = VectorStore.load(cfg.index_dir)
 

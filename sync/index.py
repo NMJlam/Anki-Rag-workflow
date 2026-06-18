@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 SCHEMA_VERSION = 2
@@ -30,8 +30,8 @@ class NoteEntry:
     committed_file_hash: str
     last_processed: str
     deck: str
-    cards: List[CardEntry] = field(default_factory=list)
-    pending_file_hash: Optional[str] = None
+    cards: list[CardEntry] = field(default_factory=list)
+    pending_file_hash: str | None = None
 
     @property
     def hash(self) -> str:
@@ -42,20 +42,20 @@ class NoteEntry:
         self.committed_file_hash = value
 
     @property
-    def proposed_hash(self) -> Optional[str]:
+    def proposed_hash(self) -> str | None:
         return self.pending_file_hash
 
     @proposed_hash.setter
-    def proposed_hash(self, value: Optional[str]) -> None:
+    def proposed_hash(self, value: str | None) -> None:
         self.pending_file_hash = value
 
 
 @dataclass
 class SyncIndex:
     version: int = SCHEMA_VERSION
-    notes: Dict[str, NoteEntry] = field(default_factory=dict)
+    notes: dict[str, NoteEntry] = field(default_factory=dict)
 
-    def get_note(self, rel_path: str) -> Optional[NoteEntry]:
+    def get_note(self, rel_path: str) -> NoteEntry | None:
         return self.notes.get(rel_path)
 
     def has_note(self, rel_path: str) -> bool:
@@ -67,7 +67,7 @@ class SyncIndex:
     def upsert_note(self, rel_path: str, entry: NoteEntry) -> None:
         self.notes[rel_path] = entry
 
-    def remove_note(self, rel_path: str) -> Optional[NoteEntry]:
+    def remove_note(self, rel_path: str) -> NoteEntry | None:
         return self.notes.pop(rel_path, None)
 
 
@@ -236,7 +236,7 @@ def _migrate_legacy_card_state(conn: sqlite3.Connection) -> None:
 
 def load_index(path: str | Path) -> SyncIndex:
     with _connect(path) as conn:
-        notes: Dict[str, NoteEntry] = {}
+        notes: dict[str, NoteEntry] = {}
         note_rows = conn.execute(
             """
             SELECT rel_path, deck, committed_file_hash, pending_file_hash,

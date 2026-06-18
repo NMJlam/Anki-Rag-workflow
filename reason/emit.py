@@ -9,7 +9,6 @@ from __future__ import annotations
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Tuple
 
 from sync.index import NoteEntry
 
@@ -27,7 +26,7 @@ def _deck_label(deck: str) -> str:
 # ------------------------------------------------------------------
 
 def emit_new_cards(
-    proposals: List[NoteProposals],
+    proposals: list[NoteProposals],
     vault_path: str | Path,
     *,
     timestamp: str | None = None,
@@ -66,7 +65,7 @@ def emit_new_cards(
 # ------------------------------------------------------------------
 
 def emit_changed_cards(
-    proposals: List[NoteProposals],
+    proposals: list[NoteProposals],
     vault_path: str | Path,
     *,
     timestamp: str | None = None,
@@ -120,7 +119,7 @@ def emit_changed_cards(
 # ------------------------------------------------------------------
 
 def emit_deleted_cards(
-    deleted_notes: List[Tuple[str, NoteEntry]],
+    deleted_notes: list[tuple[str, NoteEntry]],
     *,
     timestamp: str | None = None,
 ) -> str:
@@ -151,7 +150,7 @@ def emit_deleted_cards(
 
 
 def write_deleted_file(
-    deleted_notes: List[Tuple[str, NoteEntry]],
+    deleted_notes: list[tuple[str, NoteEntry]],
     vault_path: str | Path,
     *,
     timestamp: str | None = None,
@@ -168,7 +167,7 @@ def write_deleted_file(
 # ------------------------------------------------------------------
 
 def write_diff_files(
-    proposals: List[NoteProposals],
+    proposals: list[NoteProposals],
     vault_path: str | Path,
     *,
     timestamp: str | None = None,

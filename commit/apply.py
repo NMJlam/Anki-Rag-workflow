@@ -18,7 +18,6 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
 
 from sync.config import load_app_config
 from sync.index import (
@@ -59,7 +58,7 @@ class ParsedCard:
     question: str         # direct question about the target
     answer: str           # answer drawn from the proposition
     source: str           # verbatim original bullet
-    replaces_anki_note_id: Optional[int] = None
+    replaces_anki_note_id: int | None = None
 
 
 # ------------------------------------------------------------------
@@ -107,9 +106,9 @@ class ParsedDeletion:
     deck: str
 
 
-def parse_deleted_cards(content: str) -> List[ParsedDeletion]:
+def parse_deleted_cards(content: str) -> list[ParsedDeletion]:
     """Parse Deleted cards.md into deletion entries."""
-    deletions: List[ParsedDeletion] = []
+    deletions: list[ParsedDeletion] = []
     for line in content.split("\n"):
         m = _DELETE_HEADER_RE.match(line)
         if m:
@@ -121,18 +120,18 @@ def parse_deleted_cards(content: str) -> List[ParsedDeletion]:
     return deletions
 
 
-def parse_diff_cards(content: str) -> List[ParsedCard]:
+def parse_diff_cards(content: str) -> list[ParsedCard]:
     """Parse a diff file (New cards.md or Changed cards.md) into cards.
 
     Stops at ### audit sections (Pruned, Not self-contained, Skipped).
     """
-    cards: List[ParsedCard] = []
+    cards: list[ParsedCard] = []
     lines = content.split("\n")
     i = 0
     current_title = ""
     current_deck = ""
-    current_replaces_anki_note_id: Optional[int] = None
-    pending_replaces_anki_note_id: Optional[int] = None
+    current_replaces_anki_note_id: int | None = None
+    pending_replaces_anki_note_id: int | None = None
 
     while i < len(lines):
         line = lines[i]
@@ -238,7 +237,7 @@ def _card_state(
 # Resolve note title → rel_path in the index
 # ------------------------------------------------------------------
 
-def _resolve_rel_path(note_title: str, index: SyncIndex) -> Optional[str]:
+def _resolve_rel_path(note_title: str, index: SyncIndex) -> str | None:
     """Find the index entry whose filename stem matches note_title."""
     for rel_path in index.all_paths():
         if Path(rel_path).stem == note_title:
@@ -246,7 +245,7 @@ def _resolve_rel_path(note_title: str, index: SyncIndex) -> Optional[str]:
     return None
 
 
-def _find_rel_path_in_vault(note_title: str, vault: Path) -> Optional[str]:
+def _find_rel_path_in_vault(note_title: str, vault: Path) -> str | None:
     """Search the vault for a .md file matching note_title."""
     for md in vault.rglob("*.md"):
         if md.stem == note_title:
@@ -295,9 +294,9 @@ def apply_commit(
     changed_file = vault / "Changed cards.md"
     deleted_file = vault / "Deleted cards.md"
 
-    new_cards: List[ParsedCard] = []
-    changed_cards: List[ParsedCard] = []
-    deletions: List[ParsedDeletion] = []
+    new_cards: list[ParsedCard] = []
+    changed_cards: list[ParsedCard] = []
+    deletions: list[ParsedDeletion] = []
 
     if new_file.exists():
         new_cards = parse_diff_cards(new_file.read_text())
@@ -358,10 +357,10 @@ def apply_commit(
     # ------------------------------------------------------------------
     # 4. Apply
     # ------------------------------------------------------------------
-    log_entries: List[str] = []
+    log_entries: list[str] = []
     log_entries.append(f"## Commit {ts}")
     log_entries.append("")
-    committed_states: List[CardState] = []
+    committed_states: list[CardState] = []
     committed_note_ids: dict[str, int] = {}
 
     # --- Changed cards: replace only listed old card ids, otherwise add ---

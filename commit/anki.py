@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 ANKI_CONNECT_URL = "http://localhost:8765"
 
@@ -65,7 +65,7 @@ def _request(action: str, **params: Any) -> Any:
 # High-level helpers
 # ------------------------------------------------------------------
 
-def deck_names() -> List[str]:
+def deck_names() -> list[str]:
     return _request("deckNames")
 
 
@@ -74,7 +74,7 @@ def create_deck(deck: str) -> int:
     return _request("createDeck", deck=deck)
 
 
-def model_names() -> List[str]:
+def model_names() -> list[str]:
     return _request("modelNames")
 
 
@@ -127,24 +127,24 @@ def add_note(
     return note_id
 
 
-def delete_notes(note_ids: List[int]) -> None:
+def delete_notes(note_ids: list[int]) -> None:
     """Delete notes by their Anki note IDs."""
     if not note_ids:
         return
     _request("deleteNotes", notes=note_ids)
 
 
-def find_notes(query: str) -> List[int]:
+def find_notes(query: str) -> list[int]:
     """Find note IDs matching an Anki search query."""
     return _request("findNotes", query=query)
 
 
-def notes_info(note_ids: List[int]) -> List[Dict]:
+def notes_info(note_ids: list[int]) -> list[dict]:
     """Get full info for a list of note IDs."""
     return _request("notesInfo", notes=note_ids)
 
 
-def cards_info(card_ids: List[int]) -> List[Dict]:
+def cards_info(card_ids: list[int]) -> list[dict]:
     """Get full info for card IDs."""
     if not card_ids:
         return []
@@ -153,7 +153,7 @@ def cards_info(card_ids: List[int]) -> List[Dict]:
 
 def export_package(
     deck: str = "Default",
-    path: Optional[str] = None,
+    path: str | None = None,
     include_scheduling: bool = True,
 ) -> str:
     """Export the collection as an .apkg backup.

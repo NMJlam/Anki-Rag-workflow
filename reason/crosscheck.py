@@ -13,7 +13,6 @@ import json
 import sys
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
-from typing import Dict, List, Optional
 
 from rag.query import retrieve
 from sync.anki_source import AnkiConnectError, regular_cards_for_deck
@@ -37,7 +36,7 @@ class CardProposal:
     answer: str               # the answer drawn from the proposition
     source: str               # validating resource citation
     action: str = "add"        # add or replace
-    replaces_anki_note_id: Optional[int] = None
+    replaces_anki_note_id: int | None = None
     replaces_front: str = ""
     replaces_answer: str = ""
 
@@ -67,10 +66,10 @@ class NoteProposals:
     rel_path: str
     deck: str
     is_new_note: bool
-    proposals: List[CardProposal] = field(default_factory=list)
-    pruned: List[PrunedCard] = field(default_factory=list)
-    not_self_contained: List[NotSelfContained] = field(default_factory=list)
-    skipped: List[SkippedBullet] = field(default_factory=list)
+    proposals: list[CardProposal] = field(default_factory=list)
+    pruned: list[PrunedCard] = field(default_factory=list)
+    not_self_contained: list[NotSelfContained] = field(default_factory=list)
+    skipped: list[SkippedBullet] = field(default_factory=list)
 
 
 # ------------------------------------------------------------------
@@ -246,9 +245,9 @@ def _classify_card_change(
     question: str,
     answer: str,
     source: str,
-    existing_cards: List[Dict],
+    existing_cards: list[dict],
     used_existing_ids: set[int],
-) -> tuple[str, Optional[Dict]]:
+) -> tuple[str, dict | None]:
     """Return add/replace/keep for a proposed card against committed cards."""
     content_hash = card_content_hash(source, answer)
     for existing in existing_cards:
@@ -290,10 +289,10 @@ def _classify_card_change(
 
 def _semantic_card_changes(
     *,
-    new_cards: List[Dict],
-    existing_cards: List[Dict],
+    new_cards: list[dict],
+    existing_cards: list[dict],
     model: str = DEFAULT_MODEL,
-) -> Dict[int, tuple[str, Optional[Dict]]]:
+) -> dict[int, tuple[str, dict | None]]:
     """Use the LLM to semantically map generated cards to committed cards."""
     if not new_cards or not existing_cards:
         return {}
@@ -336,7 +335,7 @@ def _semantic_card_changes(
         except (TypeError, ValueError):
             continue
         existing_by_id[anki_note_id] = card
-    matches: Dict[int, tuple[str, Optional[Dict]]] = {}
+    matches: dict[int, tuple[str, dict | None]] = {}
     used_existing_ids: set[int] = set()
     for match in result.get("matches", []):
         try:
@@ -367,7 +366,7 @@ def _semantic_card_changes(
     return matches
 
 
-def _validating_source(card: Dict, *, config_path: str) -> str:
+def _validating_source(card: dict, *, config_path: str) -> str:
     """Return the page-exact citation for the best validating textbook page."""
     query = " ".join(
         part for part in [
@@ -392,7 +391,7 @@ def _validating_source(card: Dict, *, config_path: str) -> str:
     return results[0]["citation"]
 
 
-def generate_cards(note_content: str, *, model: str = DEFAULT_MODEL) -> Dict:
+def generate_cards(note_content: str, *, model: str = DEFAULT_MODEL) -> dict:
     """LLM generates direct Q&A cards from a note's propositions.
 
     Returns the raw JSON dict with keys: cards, pruned, not_self_contained, skipped.
@@ -461,7 +460,7 @@ def process_note(
             "source": _validating_source(card, config_path=config_path),
         })
 
-    semantic_matches: Dict[int, tuple[str, Optional[Dict]]] = {}
+    semantic_matches: dict[int, tuple[str, dict | None]] = {}
     if not is_new_note:
         semantic_matches = _semantic_card_changes(
             new_cards=generated_cards,
@@ -542,7 +541,7 @@ def process_all_notes(
     *,
     model: str = DEFAULT_MODEL,
     config_path: str = "config.toml",
-) -> List[NoteProposals]:
+) -> list[NoteProposals]:
     """Process all changed notes and return proposals."""
     all_proposals = []
     for note in diff.changed:
