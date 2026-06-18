@@ -1,4 +1,4 @@
-"""Brick 2 — scan the Obsidian vault and diff against sync_index.json.
+"""Brick 2 — scan the Obsidian vault and diff against SQLite card state.
 
 Walk the vault, hash each .md note, compare to the index, and emit lists of
 created / edited / deleted notes.  Resolve each note's deck from its folder
@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
-from .index import SyncIndex, load_index
+from .index import SyncIndex, load_index, state_db_path
 
 # Directories and files to skip when walking the vault.
 IGNORE_DIRS = {".obsidian", "templates"}
@@ -138,7 +138,7 @@ def scan_vault(vault_path: str | Path, index: SyncIndex) -> VaultDiff:
             ))
         elif existing.hash != h:
             # Skip if already proposed with this exact content
-            if existing.proposed_hash == h:
+            if existing.pending_file_hash == h:
                 continue
             diff.edited.append(ChangedNote(
                 rel_path=rel_str, content=content,
@@ -163,7 +163,7 @@ if __name__ == "__main__":
     index_path = sys.argv[2] if len(sys.argv) > 2 else "data/sync_index.json"
 
     print(f"Vault:  {vault_dir}")
-    print(f"Index:  {index_path}")
+    print(f"State:  {state_db_path(index_path)}")
 
     idx = load_index(index_path)
     result = scan_vault(vault_dir, idx)

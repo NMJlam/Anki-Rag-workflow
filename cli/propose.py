@@ -1,6 +1,6 @@
 """Orchestrator — the nightly propose job.
 
-Scans the vault, diffs against sync_index.json, generates cloze-style cards
+Scans the vault, diffs against SQLite card state, generates cloze-style cards
 from propositions with [[wikilink]] and ==highlight== targets, and writes
 New cards.md + Changed cards.md into the vault.
 
@@ -15,7 +15,7 @@ from pathlib import Path
 
 from reason.crosscheck import process_all_notes
 from reason.emit import write_diff_files
-from sync.index import NoteEntry, load_index, save_index
+from sync.index import NoteEntry, load_index, save_index, state_db_path
 from sync.state import default_state_path, record_proposals
 from sync.vault import scan_vault
 
@@ -28,7 +28,7 @@ def propose(
     """Run the full propose pipeline."""
     vault_path = Path(vault_path).resolve()
     print(f"Vault:  {vault_path}")
-    print(f"Index:  {index_path}")
+    print(f"State:  {state_db_path(index_path)}")
     print(f"Books:  {config_path}")
 
     # Brick 2 — scan vault
@@ -61,15 +61,19 @@ def propose(
     for note in diff.changed:
         entry = index.get_note(note.rel_path)
         if entry is None:
-            entry = NoteEntry(hash="", last_processed=now, deck=note.deck,
-                              proposed_hash=note.content_hash)
+            entry = NoteEntry(
+                committed_file_hash="",
+                last_processed=now,
+                deck=note.deck,
+                pending_file_hash=note.content_hash,
+            )
             index.upsert_note(note.rel_path, entry)
         else:
-            entry.proposed_hash = note.content_hash
+            entry.pending_file_hash = note.content_hash
             entry.last_processed = now
 
     save_index(index, index_path)
-    print(f"  updated {index_path}")
+    print(f"  updated {state_db_path(index_path)}")
     print("  propose complete — review the diff files, then run: uv run anki-commit")
 
 

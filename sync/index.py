@@ -1,59 +1,60 @@
-"""Read/write sync_index.json — the authoritative note→card mapping.
+"""SQLite-backed note/card state.
 
-Schema (version 1):
-{
-  "version": 1,
-  "notes": {
-    "Virtualisation/The Abstraction/Processes.md": {
-      "hash": "<sha256>",
-      "last_processed": "2026-06-18T03:00:00Z",
-      "deck": "Virtualisation",
-      "cards": [
-        {
-          "anki_note_id": 123,
-          "concept_key": "process-definition",
-          "content_hash": "<sha256 of Front+Back>",
-          "front": "What is a process?"
-        }
-      ]
-    }
-  }
-}
+The public API intentionally keeps the old SyncIndex shape so callers can ask
+"what cards are currently committed for this note?" without knowing the storage
+details. Paths that used to point at ``sync_index.json`` now resolve to the
+SQLite database beside it.
 """
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
+SCHEMA_VERSION = 2
+
+
 @dataclass
 class CardEntry:
     anki_note_id: int
-    concept_key: str          # the target (wikilink or highlight)
-    content_hash: str         # sha256(source + target) — stable identity
-    front: str                # direct question about the target
-    source: str = ""          # verbatim original bullet
+    concept_key: str
+    content_hash: str
+    front: str
+    source: str = ""
 
 
 @dataclass
 class NoteEntry:
-    hash: str                          # confirmed (committed) content hash
+    committed_file_hash: str
     last_processed: str
     deck: str
     cards: List[CardEntry] = field(default_factory=list)
-    proposed_hash: Optional[str] = None  # set by propose, cleared by commit
+    pending_file_hash: Optional[str] = None
+
+    @property
+    def hash(self) -> str:
+        return self.committed_file_hash
+
+    @hash.setter
+    def hash(self, value: str) -> None:
+        self.committed_file_hash = value
+
+    @property
+    def proposed_hash(self) -> Optional[str]:
+        return self.pending_file_hash
+
+    @proposed_hash.setter
+    def proposed_hash(self, value: Optional[str]) -> None:
+        self.pending_file_hash = value
 
 
 @dataclass
 class SyncIndex:
-    version: int = 1
+    version: int = SCHEMA_VERSION
     notes: Dict[str, NoteEntry] = field(default_factory=dict)
-
-    # ------------------------------------------------------------------
-    # Lookup helpers
-    # ------------------------------------------------------------------
 
     def get_note(self, rel_path: str) -> Optional[NoteEntry]:
         return self.notes.get(rel_path)
@@ -64,10 +65,6 @@ class SyncIndex:
     def all_paths(self) -> set[str]:
         return set(self.notes.keys())
 
-    # ------------------------------------------------------------------
-    # Mutation helpers (used by later bricks)
-    # ------------------------------------------------------------------
-
     def upsert_note(self, rel_path: str, entry: NoteEntry) -> None:
         self.notes[rel_path] = entry
 
@@ -75,68 +72,385 @@ class SyncIndex:
         return self.notes.pop(rel_path, None)
 
 
-# ----------------------------------------------------------------------
-# Serialization
-# ----------------------------------------------------------------------
-
-def _note_to_dict(entry: NoteEntry) -> Dict[str, Any]:
-    d: Dict[str, Any] = {
-        "hash": entry.hash,
-        "last_processed": entry.last_processed,
-        "deck": entry.deck,
-        "cards": [
-            {
-                "anki_note_id": c.anki_note_id,
-                "concept_key": c.concept_key,
-                "content_hash": c.content_hash,
-                "front": c.front,
-                "source": c.source,
-            }
-            for c in entry.cards
-        ],
-    }
-    if entry.proposed_hash is not None:
-        d["proposed_hash"] = entry.proposed_hash
-    return d
+def state_db_path(index_path: str | Path) -> Path:
+    """Resolve legacy index paths to the single SQLite state DB."""
+    p = Path(index_path)
+    if p.suffix in {".sqlite", ".sqlite3", ".db"}:
+        return p
+    return p.parent / "card_state.sqlite"
 
 
-def _dict_to_note(d: Dict[str, Any]) -> NoteEntry:
-    return NoteEntry(
-        hash=d["hash"],
-        last_processed=d["last_processed"],
-        deck=d["deck"],
-        cards=[
-            CardEntry(
-                anki_note_id=c["anki_note_id"],
-                concept_key=c["concept_key"],
-                content_hash=c["content_hash"],
-                front=c["front"],
-                source=c.get("source", ""),
-            )
-            for c in d.get("cards", [])
-        ],
-        proposed_hash=d.get("proposed_hash"),
+def _connect(index_path: str | Path) -> sqlite3.Connection:
+    path = state_db_path(index_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA foreign_keys = ON")
+    init_db(conn)
+    _migrate_json_if_present(conn, index_path)
+    return conn
+
+
+def init_db(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+        """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS notes (
+            rel_path TEXT PRIMARY KEY,
+            deck TEXT NOT NULL,
+            committed_file_hash TEXT NOT NULL DEFAULT '',
+            pending_file_hash TEXT,
+            last_seen_file_hash TEXT,
+            last_processed TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS cards (
+            id INTEGER PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            note_rel_path TEXT NOT NULL,
+            note_title TEXT NOT NULL,
+            deck TEXT NOT NULL,
+            question TEXT NOT NULL,
+            answer TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL,
+            card_content_hash TEXT NOT NULL,
+            concept_key TEXT NOT NULL DEFAULT '',
+            front TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL CHECK (status IN ('proposed', 'committed', 'rejected')),
+            proposed_at TEXT NOT NULL,
+            committed_at TEXT,
+            rejected_at TEXT,
+            anki_note_id INTEGER,
+            FOREIGN KEY(note_rel_path) REFERENCES notes(rel_path) ON DELETE CASCADE
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_cards_status
+        ON cards(status)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_cards_note_status
+        ON cards(note_rel_path, status)
+        """
+    )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_cards_open_proposal
+        ON cards(note_rel_path, card_content_hash)
+        WHERE status = 'proposed'
+        """
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
+        (str(SCHEMA_VERSION),),
+    )
+    _migrate_legacy_card_state(conn)
+    conn.commit()
+
+
+def _migrate_legacy_card_state(conn: sqlite3.Connection) -> None:
+    already_migrated = conn.execute(
+        "SELECT value FROM meta WHERE key = 'legacy_card_state_migrated'"
+    ).fetchone()
+    if already_migrated:
+        return
+
+    legacy_table = conn.execute(
+        """
+        SELECT name FROM sqlite_master
+         WHERE type = 'table'
+           AND name = 'card_state'
+        """
+    ).fetchone()
+    if not legacy_table:
+        return
+
+    rows = conn.execute(
+        """
+        SELECT run_id, note_rel_path, note_title, deck, question, answer, source,
+               content_hash, status, proposed_at, resolved_at, anki_note_id
+          FROM card_state
+        """
+    ).fetchall()
+    for (
+        run_id,
+        note_rel_path,
+        note_title,
+        deck,
+        question,
+        answer,
+        source,
+        content_hash,
+        status,
+        proposed_at,
+        resolved_at,
+        anki_note_id,
+    ) in rows:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO notes (
+                rel_path, deck, committed_file_hash, pending_file_hash,
+                last_seen_file_hash, last_processed
+            )
+            VALUES (?, ?, '', NULL, NULL, ?)
+            """,
+            (note_rel_path, deck, resolved_at or proposed_at or ""),
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO cards (
+                run_id, note_rel_path, note_title, deck, question, answer, source,
+                card_content_hash, concept_key, front, status, proposed_at,
+                committed_at, rejected_at, anki_note_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                note_rel_path,
+                note_title,
+                deck,
+                question,
+                answer,
+                source,
+                content_hash,
+                answer,
+                question,
+                status,
+                proposed_at,
+                resolved_at if status == "committed" else None,
+                resolved_at if status == "rejected" else None,
+                anki_note_id,
+            ),
+        )
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES ('legacy_card_state_migrated', '1')"
+    )
+
+
+def _migrate_json_if_present(conn: sqlite3.Connection, index_path: str | Path) -> None:
+    p = Path(index_path)
+    if p.suffix != ".json" or not p.exists():
+        return
+    already_migrated = conn.execute(
+        "SELECT value FROM meta WHERE key = 'json_migrated_from'"
+    ).fetchone()
+    if already_migrated:
+        return
+
+    data = json.loads(p.read_text())
+    for rel_path, note in data.get("notes", {}).items():
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO notes (
+                rel_path, deck, committed_file_hash, pending_file_hash,
+                last_seen_file_hash, last_processed
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                rel_path,
+                note.get("deck", ""),
+                note.get("hash", ""),
+                note.get("proposed_hash"),
+                note.get("proposed_hash") or note.get("hash", ""),
+                note.get("last_processed", ""),
+            ),
+        )
+        for card in note.get("cards", []):
+            conn.execute(
+                """
+                INSERT INTO cards (
+                    run_id, note_rel_path, note_title, deck, question, answer,
+                    source, card_content_hash, concept_key, front, status,
+                    proposed_at, committed_at, anki_note_id
+                )
+                VALUES ('json-migration', ?, ?, ?, ?, '', ?, ?, ?, ?, 'committed', ?, ?, ?)
+                """,
+                (
+                    rel_path,
+                    Path(rel_path).stem,
+                    note.get("deck", ""),
+                    card.get("front", ""),
+                    card.get("source", ""),
+                    card.get("content_hash", ""),
+                    card.get("concept_key", ""),
+                    card.get("front", ""),
+                    note.get("last_processed", ""),
+                    note.get("last_processed", ""),
+                    card.get("anki_note_id"),
+                ),
+            )
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES ('json_migrated_from', ?)",
+        (str(p),),
+    )
+    conn.commit()
 
 
 def load_index(path: str | Path) -> SyncIndex:
-    """Load sync_index.json.  Returns an empty index if the file doesn't exist."""
-    p = Path(path)
-    if not p.exists():
-        return SyncIndex()
-    data = json.loads(p.read_text())
-    return SyncIndex(
-        version=data.get("version", 1),
-        notes={k: _dict_to_note(v) for k, v in data.get("notes", {}).items()},
-    )
+    with _connect(path) as conn:
+        notes: Dict[str, NoteEntry] = {}
+        note_rows = conn.execute(
+            """
+            SELECT rel_path, deck, committed_file_hash, pending_file_hash,
+                   last_processed
+              FROM notes
+             ORDER BY rel_path
+            """
+        ).fetchall()
+        for rel_path, deck, committed_hash, pending_hash, last_processed in note_rows:
+            notes[rel_path] = NoteEntry(
+                committed_file_hash=committed_hash,
+                pending_file_hash=pending_hash,
+                last_processed=last_processed,
+                deck=deck,
+            )
+
+        card_rows = conn.execute(
+            """
+            SELECT note_rel_path, anki_note_id, concept_key, card_content_hash,
+                   front, source
+              FROM cards
+             WHERE status = 'committed'
+             ORDER BY id
+            """
+        ).fetchall()
+        for rel_path, anki_note_id, concept_key, content_hash, front, source in card_rows:
+            entry = notes.get(rel_path)
+            if entry is None:
+                continue
+            entry.cards.append(CardEntry(
+                anki_note_id=anki_note_id,
+                concept_key=concept_key,
+                content_hash=content_hash,
+                front=front,
+                source=source,
+            ))
+
+    return SyncIndex(notes=notes)
 
 
 def save_index(index: SyncIndex, path: str | Path) -> None:
-    """Persist sync_index.json (pretty-printed for easy diffing)."""
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    data = {
-        "version": index.version,
-        "notes": {k: _note_to_dict(v) for k, v in index.notes.items()},
-    }
-    p.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    with _connect(path) as conn:
+        seen = set(index.notes)
+        existing = {
+            row[0] for row in conn.execute("SELECT rel_path FROM notes").fetchall()
+        }
+        for rel_path in sorted(existing - seen):
+            conn.execute("DELETE FROM notes WHERE rel_path = ?", (rel_path,))
+
+        for rel_path, entry in index.notes.items():
+            conn.execute(
+                """
+                INSERT INTO notes (
+                    rel_path, deck, committed_file_hash, pending_file_hash,
+                    last_seen_file_hash, last_processed
+                )
+                VALUES (?, ?, ?, ?, COALESCE(?, ?), ?)
+                ON CONFLICT(rel_path) DO UPDATE SET
+                    deck = excluded.deck,
+                    committed_file_hash = excluded.committed_file_hash,
+                    pending_file_hash = excluded.pending_file_hash,
+                    last_seen_file_hash = excluded.last_seen_file_hash,
+                    last_processed = excluded.last_processed
+                """,
+                (
+                    rel_path,
+                    entry.deck,
+                    entry.committed_file_hash,
+                    entry.pending_file_hash,
+                    entry.pending_file_hash,
+                    entry.committed_file_hash,
+                    entry.last_processed,
+                ),
+            )
+
+            desired_hashes = {card.content_hash for card in entry.cards}
+            if desired_hashes:
+                placeholders = ",".join("?" for _ in desired_hashes)
+                conn.execute(
+                    f"""
+                    DELETE FROM cards
+                     WHERE note_rel_path = ?
+                       AND status = 'committed'
+                       AND card_content_hash NOT IN ({placeholders})
+                    """,
+                    (rel_path, *desired_hashes),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM cards WHERE note_rel_path = ? AND status = 'committed'",
+                    (rel_path,),
+                )
+
+            for card in entry.cards:
+                existing = conn.execute(
+                    """
+                    SELECT id FROM cards
+                     WHERE note_rel_path = ?
+                       AND card_content_hash = ?
+                       AND status = 'committed'
+                     LIMIT 1
+                    """,
+                    (rel_path, card.content_hash),
+                ).fetchone()
+                if existing:
+                    conn.execute(
+                        """
+                        UPDATE cards
+                           SET deck = ?,
+                               question = COALESCE(NULLIF(question, ''), ?),
+                               source = COALESCE(NULLIF(source, ''), ?),
+                               concept_key = ?,
+                               front = ?,
+                               anki_note_id = ?
+                         WHERE id = ?
+                        """,
+                        (
+                            entry.deck,
+                            card.front,
+                            card.source,
+                            card.concept_key,
+                            card.front,
+                            card.anki_note_id,
+                            existing[0],
+                        ),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        INSERT INTO cards (
+                            run_id, note_rel_path, note_title, deck, question, answer,
+                            source, card_content_hash, concept_key, front, status,
+                            proposed_at, committed_at, anki_note_id
+                        )
+                        VALUES ('save-index', ?, ?, ?, ?, '', ?, ?, ?, ?, 'committed', ?, ?, ?)
+                        """,
+                        (
+                            rel_path,
+                            Path(rel_path).stem,
+                            entry.deck,
+                            card.front,
+                            card.source,
+                            card.content_hash,
+                            card.concept_key,
+                            card.front,
+                            entry.last_processed,
+                            entry.last_processed,
+                            card.anki_note_id,
+                        ),
+                    )

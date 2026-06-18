@@ -1,7 +1,7 @@
 """Check Obsidian notes for factual errors against textbooks via RAG.
 
 Extracts claims from notes, cross-checks each against the textbook index,
-and inserts Obsidian callouts at the top of notes where errors are found.
+and inserts Obsidian callouts above the lines where errors are found.
 
 Usage:
     uv run anki-check-notes [vault_path] [books_config]
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import sys
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from reason.check import check_all_notes, ClaimIssue, NoteReport
@@ -49,6 +50,50 @@ def _build_callout(issue: ClaimIssue) -> str:
     return "\n".join(lines)
 
 
+def _normalized_text(text: str) -> str:
+    """Normalize Markdown-ish text enough to match extracted claims to lines."""
+    text = re.sub(r"[^\w\s]", " ", text)
+    return " ".join(text.lower().split())
+
+
+def _find_claim_line(lines: list[str], claim: str, start_idx: int) -> int | None:
+    """Return the best matching line index for an extracted claim."""
+    best_idx = None
+    best_score = 0.0
+    for idx in range(start_idx, len(lines)):
+        score = _claim_line_score(lines[idx], claim)
+        if score > best_score:
+            best_idx = idx
+            best_score = score
+
+    return best_idx if best_score >= 0.55 else None
+
+
+def _claim_line_score(line: str, claim: str) -> float:
+    """Score how likely a note line is to contain an extracted claim."""
+    if claim in line:
+        return 1.0
+
+    normalized_line = _normalized_text(line)
+    normalized_claim = _normalized_text(claim)
+    if not normalized_claim or not normalized_line:
+        return 0.0
+    if normalized_claim in normalized_line:
+        return 0.98
+
+    claim_tokens = set(normalized_claim.split())
+    line_tokens = set(normalized_line.split())
+    if not claim_tokens or not line_tokens:
+        return 0.0
+
+    shared_tokens = claim_tokens & line_tokens
+    claim_coverage = len(shared_tokens) / len(claim_tokens)
+    line_coverage = len(shared_tokens) / len(line_tokens)
+    token_score = (claim_coverage * 0.75) + (line_coverage * 0.25)
+    sequence_score = SequenceMatcher(None, normalized_claim, normalized_line).ratio()
+    return max(token_score, sequence_score)
+
+
 def _strip_old_callouts(content: str) -> str:
     """Remove all callout blocks from previous check runs."""
     lines = content.split("\n")
@@ -73,28 +118,49 @@ def _inject_callouts(
     vault_path: Path,
     report: NoteReport,
 ) -> None:
-    """Insert callout blocks at the top of a note (after frontmatter)."""
+    """Insert callout blocks above matching claim lines when possible."""
     note_file = vault_path / report.rel_path
     content = note_file.read_text(errors="replace")
 
     # Strip any old check callouts first
     content = _strip_old_callouts(content)
 
-    # Build the callout block
-    callout_block = "\n\n".join(
-        _build_callout(issue) for issue in report.issues
-    ) + "\n\n"
-
-    # Insert after frontmatter if present, otherwise at the top
+    # Avoid inserting generated callouts inside YAML frontmatter.
     m = _FRONTMATTER_RE.match(content)
-    if m:
-        insert_pos = m.end()
-        # Ensure there's a newline between frontmatter and callout
-        if not content[insert_pos:].startswith("\n"):
-            callout_block = "\n" + callout_block
-        new_content = content[:insert_pos] + callout_block + content[insert_pos:].lstrip("\n")
+    body_start_idx = content[:m.end()].count("\n") if m else 0
+
+    lines = content.splitlines(keepends=True)
+    issues_by_line: dict[int, list[ClaimIssue]] = {}
+    fallback_issues: list[ClaimIssue] = []
+
+    for issue in report.issues:
+        match_idx = _find_claim_line(lines, issue.claim, body_start_idx)
+
+        if match_idx is None:
+            fallback_issues.append(issue)
+        else:
+            issues_by_line.setdefault(match_idx, []).append(issue)
+
+    if fallback_issues:
+        issues_by_line.setdefault(body_start_idx, []).extend(fallback_issues)
+
+    if not lines:
+        new_content = "\n\n".join(_build_callout(issue) for issue in report.issues) + "\n"
     else:
-        new_content = callout_block + content.lstrip("\n")
+        output: list[str] = []
+        for idx, line in enumerate(lines):
+            if idx in issues_by_line:
+                output.append("\n\n".join(
+                    _build_callout(issue) for issue in issues_by_line[idx]
+                ) + "\n\n")
+            output.append(line)
+
+        if len(lines) in issues_by_line:
+            output.append("\n\n".join(
+                _build_callout(issue) for issue in issues_by_line[len(lines)]
+            ) + "\n\n")
+
+        new_content = "".join(output)
 
     note_file.write_text(new_content)
 

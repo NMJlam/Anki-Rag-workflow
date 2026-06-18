@@ -27,16 +27,16 @@ anki-rag/
 │   ├── store.py            #   numpy vector store (cosine search)
 │   ├── ingest.py           #   PDF -> per-page chunks -> embeddings -> index
 │   └── query.py            #   question -> top-k pages + citations
-├── sync/                   # Brick 2 — vault scan + index
-│   ├── vault.py            #   scan notes, compute hashes, diff vs index
-│   └── index.py            #   read/write sync_index.json
+├── sync/                   # Brick 2 — vault scan + SQLite state
+│   ├── vault.py            #   scan notes, compute hashes, diff vs state
+│   └── index.py            #   read/write card_state.sqlite
 ├── reason/                 # Brick 3 — LLM cross-check (OpenRouter)
 │   ├── llm.py              #   OpenRouter client (DeepSeek V3.2)
 │   ├── crosscheck.py       #   note + RAG -> concepts + verdicts -> proposals
 │   └── emit.py             #   write New cards.md / Changed cards.md
 ├── commit/                 # Brick 4 — apply to Anki (AnkiConnect)
 │   ├── anki.py             #   AnkiConnect wrapper (localhost:8765)
-│   └── apply.py            #   parse diffs, backup, add/delete, update index
+│   └── apply.py            #   parse diffs, backup, add/delete, update state
 ├── tests/                  # test fixtures + smoke-test utilities
 │   ├── make_sample_pdf.py  #   generates a sample PDF for offline testing
 │   └── books.test.yaml     #   offline smoke-test config (hashing embedder)
@@ -45,7 +45,7 @@ anki-rag/
 ├── data/
 │   ├── pdfs/               #   drop textbook PDFs here
 │   ├── index/              #   generated vector index
-│   └── sync_index.json     #   note -> card mapping (authoritative state)
+│   └── card_state.sqlite   #   note/card state (authoritative)
 ├── books.yaml              # textbook config: paths + page-offset calibration
 ├── pyproject.toml
 └── uv.lock
@@ -147,10 +147,10 @@ uv run reject
 ```
 
 This marks the pending cards as rejected in `data/card_state.sqlite`, removes
-`New cards.md` / `Changed cards.md`, and clears proposal markers from
-`sync_index.json` without updating the committed note hash. The next proposal run
-therefore scans from the last committed state and includes the rejected notes
-again if their current content still differs, along with any newer notes you add.
+`New cards.md` / `Changed cards.md`, and clears proposal markers without
+updating the committed note hash. The next proposal run therefore scans from the
+last committed state and includes the rejected notes again if their current
+content still differs, along with any newer notes you add.
 
 ### 4. Commit to Anki
 
@@ -165,8 +165,8 @@ This will:
 3. Ensure the `Basic (tracked)` note type exists
 4. Create any needed decks
 5. Delete old cards (for changed proposals) and add new ones via AnkiConnect
-6. Update `sync_index.json` with the new card mappings
-7. Mark the applied cards as committed in `data/card_state.sqlite`
+6. Update `data/card_state.sqlite` with the new card mappings
+7. Mark the applied cards as committed
 8. Write a timestamped log to `Anki sync log.md`
 9. Clean up the diff files
 10. Trigger AnkiWeb sync
@@ -201,7 +201,7 @@ The pipeline has four bricks:
 | Brick | Module | What it does |
 |-------|--------|-------------|
 | 1 | `rag/` | Turns textbook PDFs into a searchable vector index. Local, free, no API. |
-| 2 | `sync/` | Scans the Obsidian vault, hashes each note, diffs against `sync_index.json`. |
+| 2 | `sync/` | Scans the Obsidian vault, hashes each note, diffs against `data/card_state.sqlite`. |
 | 3 | `reason/` | For each changed note: extracts concepts, retrieves textbook passages, asks the LLM for a verdict, and writes the diff files. |
 | 4 | `commit/` | Parses the approved diffs, backs up Anki, applies adds/deletes via AnkiConnect, updates the index. |
 
@@ -226,7 +226,7 @@ The pipeline has four bricks:
 |------|---------|
 | `.env` | `OPEN_ROUTER_TOKEN` — your OpenRouter API key |
 | `books.yaml` | Textbook paths, labels, page offsets, embedder choice |
-| `data/sync_index.json` | Note-to-card mapping (auto-managed, don't hand-edit) |
+| `data/card_state.sqlite` | Note/card state, including committed file hashes, pending file hashes, and card rows |
 
 Default vault path: `/Users/root1/Obsidian/quant` (pass as first arg to
 `anki-propose` or `anki-commit` to override).

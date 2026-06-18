@@ -1,4 +1,4 @@
-"""SQLite state for proposed, committed, and rejected cards."""
+"""SQLite lifecycle helpers for proposed, committed, and rejected cards."""
 from __future__ import annotations
 
 import hashlib
@@ -8,11 +8,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, Sequence
 
+from .index import init_db, state_db_path
+
 if TYPE_CHECKING:
     from reason.crosscheck import NoteProposals
-
-
-SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -27,8 +26,7 @@ class CardState:
 
 
 def default_state_path(index_path: str | Path) -> Path:
-    """Place card state beside the sync index."""
-    return Path(index_path).parent / "card_state.sqlite"
+    return state_db_path(index_path)
 
 
 def card_content_hash(source: str, answer: str) -> str:
@@ -41,66 +39,12 @@ def _utc_now() -> str:
 
 
 def _connect(db_path: str | Path) -> sqlite3.Connection:
-    path = Path(db_path)
+    path = state_db_path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.execute("PRAGMA foreign_keys = ON")
     init_db(conn)
     return conn
-
-
-def init_db(conn: sqlite3.Connection) -> None:
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS meta (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS card_state (
-            id INTEGER PRIMARY KEY,
-            run_id TEXT NOT NULL,
-            note_rel_path TEXT NOT NULL,
-            note_title TEXT NOT NULL,
-            deck TEXT NOT NULL,
-            question TEXT NOT NULL,
-            answer TEXT NOT NULL,
-            source TEXT NOT NULL,
-            content_hash TEXT NOT NULL,
-            status TEXT NOT NULL CHECK (status IN ('proposed', 'committed', 'rejected')),
-            proposed_at TEXT NOT NULL,
-            resolved_at TEXT,
-            anki_note_id INTEGER
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_card_state_status
-        ON card_state(status)
-        """
-    )
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_card_state_note_status
-        ON card_state(note_rel_path, status)
-        """
-    )
-    conn.execute(
-        """
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_card_state_open_proposal
-        ON card_state(note_rel_path, content_hash)
-        WHERE status = 'proposed'
-        """
-    )
-    conn.execute(
-        "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
-        (str(SCHEMA_VERSION),),
-    )
-    conn.commit()
 
 
 def record_proposals(
@@ -117,6 +61,7 @@ def record_proposals(
     for note in proposals:
         note_title = Path(note.rel_path).stem
         for proposal in note.proposals:
+            content_hash = card_content_hash(proposal.source, proposal.answer)
             rows.append(
                 (
                     run,
@@ -126,8 +71,9 @@ def record_proposals(
                     proposal.question,
                     proposal.answer,
                     proposal.source,
-                    card_content_hash(proposal.source, proposal.answer),
-                    "proposed",
+                    content_hash,
+                    proposal.target,
+                    proposal.question,
                     now,
                 )
             )
@@ -136,11 +82,22 @@ def record_proposals(
         return 0
 
     with _connect(db_path) as conn:
+        for note in proposals:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO notes (
+                    rel_path, deck, committed_file_hash, pending_file_hash,
+                    last_seen_file_hash, last_processed
+                )
+                VALUES (?, ?, '', NULL, NULL, ?)
+                """,
+                (note.rel_path, note.deck, now),
+            )
         conn.executemany(
             """
-            UPDATE card_state
+            UPDATE cards
                SET status = 'rejected',
-                   resolved_at = ?
+                   rejected_at = ?
              WHERE status = 'proposed'
                AND note_rel_path = ?
             """,
@@ -148,11 +105,11 @@ def record_proposals(
         )
         conn.executemany(
             """
-            INSERT OR REPLACE INTO card_state (
+            INSERT OR REPLACE INTO cards (
                 run_id, note_rel_path, note_title, deck, question, answer, source,
-                content_hash, status, proposed_at
+                card_content_hash, concept_key, front, status, proposed_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'proposed', ?)
             """,
             rows,
         )
@@ -162,7 +119,7 @@ def record_proposals(
 def pending_note_paths(db_path: str | Path) -> set[str]:
     with _connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT DISTINCT note_rel_path FROM card_state WHERE status = 'proposed'"
+            "SELECT DISTINCT note_rel_path FROM cards WHERE status = 'proposed'"
         ).fetchall()
     return {row[0] for row in rows}
 
@@ -170,12 +127,12 @@ def pending_note_paths(db_path: str | Path) -> set[str]:
 def pending_count(db_path: str | Path) -> int:
     with _connect(db_path) as conn:
         row = conn.execute(
-            "SELECT COUNT(*) FROM card_state WHERE status = 'proposed'"
+            "SELECT COUNT(*) FROM cards WHERE status = 'proposed'"
         ).fetchone()
     return int(row[0])
 
 
-def _card_values(card: CardState) -> tuple[str, str, str, str, str, str, str]:
+def _card_values(card: CardState) -> tuple[str, str, str, str, str, str, str, str, str]:
     return (
         card.note_rel_path,
         card.note_title,
@@ -184,6 +141,8 @@ def _card_values(card: CardState) -> tuple[str, str, str, str, str, str, str]:
         card.answer,
         card.source,
         card.content_hash,
+        card.answer,
+        card.question,
     )
 
 
@@ -196,34 +155,79 @@ def mark_cards_committed(
     """Resolve matching pending cards as committed, or insert committed rows."""
     now = _utc_now()
     count = 0
+    committed_by_note: dict[str, set[str]] = {}
     with _connect(db_path) as conn:
         for card in cards:
             anki_note_id = (anki_note_ids or {}).get(card.content_hash)
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO notes (
+                    rel_path, deck, committed_file_hash, pending_file_hash,
+                    last_seen_file_hash, last_processed
+                )
+                VALUES (?, ?, '', NULL, NULL, ?)
+                """,
+                (card.note_rel_path, card.deck, now),
+            )
             result = conn.execute(
                 """
-                UPDATE card_state
+                UPDATE cards
                    SET status = 'committed',
-                       resolved_at = ?,
-                       anki_note_id = COALESCE(?, anki_note_id)
+                       committed_at = ?,
+                       anki_note_id = COALESCE(?, anki_note_id),
+                       question = ?,
+                       answer = ?,
+                       source = ?,
+                       front = ?
                  WHERE status = 'proposed'
                    AND note_rel_path = ?
-                   AND content_hash = ?
+                   AND card_content_hash = ?
                 """,
-                (now, anki_note_id, card.note_rel_path, card.content_hash),
+                (
+                    now,
+                    anki_note_id,
+                    card.question,
+                    card.answer,
+                    card.source,
+                    card.question,
+                    card.note_rel_path,
+                    card.content_hash,
+                ),
             )
             if result.rowcount == 0:
                 conn.execute(
                     """
-                    INSERT INTO card_state (
+                    INSERT INTO cards (
                         run_id, note_rel_path, note_title, deck, question, answer,
-                        source, content_hash, status, proposed_at, resolved_at,
-                        anki_note_id
+                        source, card_content_hash, concept_key, front, status,
+                        proposed_at, committed_at, anki_note_id
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'committed', ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'committed', ?, ?, ?)
                     """,
-                    ("manual-commit", *_card_values(card), now, now, anki_note_id),
+                    (
+                        "manual-commit",
+                        *_card_values(card),
+                        now,
+                        now,
+                        anki_note_id,
+                    ),
                 )
+            committed_by_note.setdefault(card.note_rel_path, set()).add(card.content_hash)
             count += 1
+
+        for rel_path, hashes in committed_by_note.items():
+            placeholders = ",".join("?" for _ in hashes)
+            conn.execute(
+                f"""
+                UPDATE cards
+                   SET status = 'rejected',
+                       rejected_at = ?
+                 WHERE status = 'proposed'
+                   AND note_rel_path = ?
+                   AND card_content_hash NOT IN ({placeholders})
+                """,
+                (now, rel_path, *hashes),
+            )
     return count
 
 
@@ -232,9 +236,9 @@ def reject_pending(db_path: str | Path) -> int:
     with _connect(db_path) as conn:
         result = conn.execute(
             """
-            UPDATE card_state
+            UPDATE cards
                SET status = 'rejected',
-                   resolved_at = ?
+                   rejected_at = ?
              WHERE status = 'proposed'
             """,
             (now,),

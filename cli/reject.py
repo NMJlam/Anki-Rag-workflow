@@ -19,7 +19,7 @@ def _proposed_index_paths(index: SyncIndex) -> set[str]:
     return {
         rel_path
         for rel_path, entry in index.notes.items()
-        if entry.proposed_hash is not None
+        if entry.pending_file_hash is not None
     }
 
 
@@ -30,13 +30,13 @@ def _clear_proposals(index: SyncIndex, rel_paths: set[str]) -> int:
         if entry is None:
             continue
 
-        if not entry.cards and not entry.hash:
+        if not entry.cards and not entry.committed_file_hash:
             index.remove_note(rel_path)
             cleared += 1
             continue
 
-        if entry.proposed_hash is not None:
-            entry.proposed_hash = None
+        if entry.pending_file_hash is not None:
+            entry.pending_file_hash = None
             cleared += 1
 
     return cleared

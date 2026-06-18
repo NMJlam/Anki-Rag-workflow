@@ -6,7 +6,7 @@ Flow:
   3. Ensure 'Basic (tracked)' model exists; ensure target decks exist.
   4. For changed notes: delete old cards, add new ones.
   5. For new notes: add all cards.
-  6. Update sync_index.json with new card entries.
+  6. Update SQLite state with new card entries.
   7. Move applied entries to Anki sync log.md; trigger AnkiWeb sync.
 
 Run standalone:  python -m commit.apply [vault_path] [index_path]
@@ -21,7 +21,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
-from sync.index import CardEntry, NoteEntry, SyncIndex, load_index, save_index
+from sync.index import (
+    CardEntry,
+    NoteEntry,
+    SyncIndex,
+    load_index,
+    save_index,
+    state_db_path,
+)
 from sync.state import (
     CardState,
     default_state_path,
@@ -319,7 +326,9 @@ def apply_commit(
             note_entry = index.get_note(rel_path)
             if note_entry is None:
                 note_entry = NoteEntry(
-                    hash="", last_processed=now.isoformat(), deck=card.deck,
+                    committed_file_hash="",
+                    last_processed=now.isoformat(),
+                    deck=card.deck,
                 )
                 index.upsert_note(rel_path, note_entry)
             note_entry.cards.append(CardEntry(
@@ -368,7 +377,9 @@ def apply_commit(
         note_entry = index.get_note(rel_path)
         if note_entry is None:
             note_entry = NoteEntry(
-                hash="", last_processed=now.isoformat(), deck=card.deck,
+                committed_file_hash="",
+                last_processed=now.isoformat(),
+                deck=card.deck,
             )
             index.upsert_note(rel_path, note_entry)
 
@@ -391,14 +402,14 @@ def apply_commit(
         )
 
     # ------------------------------------------------------------------
-    # 5. Promote proposed_hash → hash for committed notes, then save
+    # 5. Promote pending_file_hash → committed_file_hash for committed notes, then save
     # ------------------------------------------------------------------
     committed_paths = {c.note_rel_path for c in committed_states}
     for rel_path in committed_paths:
         note_entry = index.get_note(rel_path)
-        if note_entry and note_entry.proposed_hash:
-            note_entry.hash = note_entry.proposed_hash
-            note_entry.proposed_hash = None
+        if note_entry and note_entry.pending_file_hash:
+            note_entry.committed_file_hash = note_entry.pending_file_hash
+            note_entry.pending_file_hash = None
 
     if committed_states:
         committed_count = mark_cards_committed(
@@ -409,7 +420,7 @@ def apply_commit(
         print(f"  recorded {committed_count} committed card(s)")
 
     save_index(index, index_path)
-    print(f"  updated {index_path}")
+    print(f"  updated {state_db_path(index_path)}")
 
     # ------------------------------------------------------------------
     # 6. Write log + clear diff files
@@ -455,5 +466,5 @@ if __name__ == "__main__":
     idx_path = sys.argv[2] if len(sys.argv) > 2 else "data/sync_index.json"
 
     print(f"Vault:  {vault_dir}")
-    print(f"Index:  {idx_path}")
+    print(f"State:  {state_db_path(idx_path)}")
     apply_commit(vault_dir, idx_path)

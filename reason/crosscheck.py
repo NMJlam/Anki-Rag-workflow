@@ -15,7 +15,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from sync.index import SyncIndex, NoteEntry, load_index
+from sync.index import SyncIndex, load_index, state_db_path
 from sync.vault import ChangedNote, VaultDiff, scan_vault
 
 from rag.query import retrieve
@@ -320,7 +320,7 @@ if __name__ == "__main__":
     index_path = sys.argv[2] if len(sys.argv) > 2 else "data/sync_index.json"
 
     print(f"Vault:  {vault_dir}")
-    print(f"Index:  {index_path}")
+    print(f"State:  {state_db_path(index_path)}")
 
     idx = load_index(index_path)
     diff = scan_vault(vault_dir, idx)
