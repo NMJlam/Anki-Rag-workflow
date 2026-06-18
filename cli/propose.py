@@ -16,6 +16,7 @@ from pathlib import Path
 from cli.check_markers import CALLOUT_MARKER
 from reason.crosscheck import process_all_notes
 from reason.emit import write_diff_files
+from sync.anki_source import AnkiConnectError, refresh_committed_cards_from_anki
 from sync.config import load_app_config
 from sync.index import NoteEntry, load_index, save_index, state_db_path
 from sync.state import default_state_path, record_proposals
@@ -67,6 +68,24 @@ def propose(
             print(f"  - {rel_path}")
         return
 
+    # Treat Anki as authoritative for committed tracked cards. SQLite remains
+    # the local cache for note hashes and pending proposal state.
+    state_exists = Path(state_path).exists()
+    try:
+        imported = refresh_committed_cards_from_anki(
+            state_path,
+            vault_path=vault_path,
+        )
+        print(f"  synced {imported} committed tracked card(s) from Anki")
+    except AnkiConnectError as exc:
+        if not state_exists:
+            print(f"  cannot sync committed cards from Anki: {exc}")
+            print("  aborting because no local card state exists yet")
+            print("  open Anki with AnkiConnect installed, then retry")
+            return
+        print(f"  WARNING: could not sync committed cards from Anki: {exc}")
+        print("  continuing with existing local card-state cache")
+
     # Brick 2 — scan vault
     index = load_index(state_path)
     diff = scan_vault(vault_path, index)
@@ -80,12 +99,32 @@ def propose(
     print(f"  processing {len(diff.changed)} note(s) ...")
     proposals = process_all_notes(diff, index, config_path=config_path)
 
-    if not proposals:
-        print("  no cards to propose")
+    total_cards = sum(len(p.proposals) for p in proposals)
+    now = datetime.now(timezone.utc).isoformat()
+
+    if total_cards == 0:
+        print("  no card-impact changes to propose")
+        for note in diff.changed:
+            entry = index.get_note(note.rel_path)
+            if entry is None:
+                entry = NoteEntry(
+                    committed_file_hash=note.content_hash,
+                    last_processed=now,
+                    deck=note.deck,
+                    pending_file_hash=None,
+                )
+                index.upsert_note(note.rel_path, entry)
+            else:
+                entry.committed_file_hash = note.content_hash
+                entry.pending_file_hash = None
+                entry.last_processed = now
+                entry.deck = note.deck
+        save_index(index, state_path)
+        print(f"  updated {state_db_path(state_path)}")
         return
 
-    total_cards = sum(len(p.proposals) for p in proposals)
-    print(f"  {total_cards} card(s) proposed across {len(proposals)} note(s)")
+    notes_with_cards = sum(1 for proposal in proposals if proposal.proposals)
+    print(f"  {total_cards} card(s) proposed across {notes_with_cards} note(s)")
 
     # Write diff files
     write_diff_files(proposals, vault_path)
@@ -93,20 +132,34 @@ def propose(
     print(f"  recorded {recorded} pending card(s)")
 
     # Mark notes as proposed (don't update hash — that happens at commit)
-    now = datetime.now(timezone.utc).isoformat()
+    proposal_paths = {
+        proposal.rel_path for proposal in proposals
+        if proposal.proposals
+    }
     for note in diff.changed:
         entry = index.get_note(note.rel_path)
         if entry is None:
+            committed_file_hash = (
+                "" if note.rel_path in proposal_paths else note.content_hash
+            )
+            pending_file_hash = (
+                note.content_hash if note.rel_path in proposal_paths else None
+            )
             entry = NoteEntry(
-                committed_file_hash="",
+                committed_file_hash=committed_file_hash,
                 last_processed=now,
                 deck=note.deck,
-                pending_file_hash=note.content_hash,
+                pending_file_hash=pending_file_hash,
             )
             index.upsert_note(note.rel_path, entry)
         else:
-            entry.pending_file_hash = note.content_hash
+            if note.rel_path in proposal_paths:
+                entry.pending_file_hash = note.content_hash
+            else:
+                entry.committed_file_hash = note.content_hash
+                entry.pending_file_hash = None
             entry.last_processed = now
+            entry.deck = note.deck
 
     save_index(index, state_path)
     print(f"  updated {state_db_path(state_path)}")

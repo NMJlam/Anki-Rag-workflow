@@ -69,12 +69,7 @@ def emit_changed_cards(
     *,
     timestamp: str | None = None,
 ) -> str:
-    """Generate the content of Changed cards.md.
-
-    For now, changed notes are treated the same as new notes — all their
-    generated cards are emitted as additions. The commit step handles
-    diffing against the index to decide what to add/delete.
-    """
+    """Generate the content of Changed cards.md."""
     ts = timestamp or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
     changed_notes = [p for p in proposals if not p.is_new_note]
     total_cards = sum(len(p.proposals) for p in changed_notes)
@@ -82,7 +77,8 @@ def emit_changed_cards(
     lines = [
         "# Changed Cards — pending approval",
         f"# run {ts} · {total_cards} card(s) from changed notes",
-        "# old cards for these notes will be deleted and replaced",
+        "# unchanged cards are omitted",
+        "# replacement callouts show the old card that will be deleted",
         "",
     ]
 
@@ -91,9 +87,24 @@ def emit_changed_cards(
         deck_str = _deck_label(np.deck)
 
         for proposal in np.proposals:
-            lines.append(
-                f"## ++ from [[{note_title}]]      deck: {deck_str}"
-            )
+            if proposal.action == "replace" and proposal.replaces_anki_note_id:
+                lines.append("> [!warning] Replace existing card")
+                lines.append(
+                    f"> -- card {proposal.replaces_anki_note_id} from "
+                    f"[[{note_title}]]      deck: {deck_str}"
+                )
+                if proposal.replaces_front:
+                    lines.append(f'> old Q: "{proposal.replaces_front}"')
+                if proposal.replaces_answer:
+                    lines.append(f'> old A: "{proposal.replaces_answer}"')
+                lines.append(">")
+                lines.append(
+                    f"## ++ replace from [[{note_title}]]      deck: {deck_str}"
+                )
+            else:
+                lines.append(
+                    f"## ++ add from [[{note_title}]]      deck: {deck_str}"
+                )
             lines.append(f"Q: {proposal.question}")
             lines.append(f"A: {proposal.answer}")
             lines.append(f'source: "{proposal.source}"')

@@ -144,6 +144,13 @@ def notes_info(note_ids: List[int]) -> List[Dict]:
     return _request("notesInfo", notes=note_ids)
 
 
+def cards_info(card_ids: List[int]) -> List[Dict]:
+    """Get full info for card IDs."""
+    if not card_ids:
+        return []
+    return _request("cardsInfo", cards=card_ids)
+
+
 def export_package(
     deck: str = "Default",
     path: Optional[str] = None,

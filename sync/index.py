@@ -21,6 +21,7 @@ class CardEntry:
     concept_key: str
     content_hash: str
     front: str
+    answer: str = ""
     source: str = ""
 
 
@@ -255,13 +256,13 @@ def load_index(path: str | Path) -> SyncIndex:
         card_rows = conn.execute(
             """
             SELECT note_rel_path, anki_note_id, concept_key, card_content_hash,
-                   front, source
+                   front, answer, source
               FROM cards
              WHERE status = 'committed'
              ORDER BY id
             """
         ).fetchall()
-        for rel_path, anki_note_id, concept_key, content_hash, front, source in card_rows:
+        for rel_path, anki_note_id, concept_key, content_hash, front, answer, source in card_rows:
             entry = notes.get(rel_path)
             if entry is None:
                 continue
@@ -270,6 +271,7 @@ def load_index(path: str | Path) -> SyncIndex:
                 concept_key=concept_key,
                 content_hash=content_hash,
                 front=front,
+                answer=answer,
                 source=source,
             ))
 
@@ -346,6 +348,7 @@ def save_index(index: SyncIndex, path: str | Path) -> None:
                         UPDATE cards
                            SET deck = ?,
                                question = COALESCE(NULLIF(question, ''), ?),
+                               answer = COALESCE(NULLIF(answer, ''), ?),
                                source = COALESCE(NULLIF(source, ''), ?),
                                concept_key = ?,
                                front = ?,
@@ -355,6 +358,7 @@ def save_index(index: SyncIndex, path: str | Path) -> None:
                         (
                             entry.deck,
                             card.front,
+                            card.answer,
                             card.source,
                             card.concept_key,
                             card.front,
@@ -370,13 +374,14 @@ def save_index(index: SyncIndex, path: str | Path) -> None:
                             source, card_content_hash, concept_key, front, status,
                             proposed_at, committed_at, anki_note_id
                         )
-                        VALUES ('save-index', ?, ?, ?, ?, '', ?, ?, ?, ?, 'committed', ?, ?, ?)
+                        VALUES ('save-index', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'committed', ?, ?, ?)
                         """,
                         (
                             rel_path,
                             Path(rel_path).stem,
                             entry.deck,
                             card.front,
+                            card.answer,
                             card.source,
                             card.content_hash,
                             card.concept_key,

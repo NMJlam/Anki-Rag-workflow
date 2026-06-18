@@ -13,9 +13,11 @@ import hashlib
 import json
 import sys
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 from typing import Dict, List, Optional
 
 from rag.query import retrieve
+from sync.anki_source import AnkiConnectError, regular_cards_for_deck
 from sync.config import load_app_config
 from sync.index import SyncIndex, load_index, state_db_path
 from sync.vault import ChangedNote, VaultDiff, scan_vault
@@ -34,6 +36,10 @@ class CardProposal:
     question: str             # a direct question about the target
     answer: str               # the answer drawn from the proposition
     source: str               # validating resource citation
+    action: str = "add"        # add or replace
+    replaces_anki_note_id: Optional[int] = None
+    replaces_front: str = ""
+    replaces_answer: str = ""
 
 
 @dataclass
@@ -185,6 +191,41 @@ Reply with a JSON object:
 """
 
 
+MATCH_CARDS_SYSTEM = """\
+You compare newly generated Anki cards against already committed Anki cards for
+one source note.
+
+Your job is card lifecycle matching, not teaching. Decide whether each new card:
+
+- "keep": an existing card already tests the same learning objective and its answer
+  has the same meaning. Different wording, citation changes, or minor clarity edits
+  are still keep.
+- "replace": an existing card tests the same learning objective, but the new answer
+  materially changes, corrects, narrows, or expands what must be remembered.
+- "add": no existing card tests the same learning objective.
+
+Match semantically. Do not require identical wording. However, do not collapse cards
+that only share a broad topic; they must test the same recall target.
+
+Use each existing card at most once. Prefer the most specific matching existing card.
+
+Reply with JSON:
+{
+  "matches": [
+    {
+      "new_index": 0,
+      "action": "keep|replace|add",
+      "existing_anki_note_id": 123,
+      "reason": "short reason"
+    }
+  ]
+}
+
+For "add", existing_anki_note_id must be null.
+For "keep" or "replace", existing_anki_note_id must be the matched existing card id.
+"""
+
+
 # ------------------------------------------------------------------
 # Core logic
 # ------------------------------------------------------------------
@@ -193,6 +234,140 @@ def _card_identity_hash(source: str, target: str) -> str:
     """Stable content hash from (source + target) — survives Q rewording."""
     combined = source + "\n" + target
     return hashlib.sha256(combined.encode()).hexdigest()
+
+
+def _normalize_text(text: str) -> str:
+    return " ".join(text.casefold().split())
+
+
+def _question_similarity(left: str, right: str) -> float:
+    return SequenceMatcher(None, _normalize_text(left), _normalize_text(right)).ratio()
+
+
+def _classify_card_change(
+    *,
+    question: str,
+    answer: str,
+    source: str,
+    existing_cards: List[Dict],
+    used_existing_ids: set[int],
+) -> tuple[str, Optional[Dict]]:
+    """Return add/replace/keep for a proposed card against committed cards."""
+    content_hash = _card_identity_hash(source, answer)
+    for existing in existing_cards:
+        anki_note_id = existing.get("anki_note_id")
+        if existing.get("content_hash") == content_hash:
+            if isinstance(anki_note_id, int):
+                used_existing_ids.add(anki_note_id)
+            return "keep", existing
+
+    unused = [
+        card for card in existing_cards
+        if card.get("anki_note_id") not in used_existing_ids
+    ]
+    for existing in unused:
+        if _normalize_text(existing.get("front", "")) == _normalize_text(question):
+            anki_note_id = existing.get("anki_note_id")
+            if isinstance(anki_note_id, int):
+                used_existing_ids.add(anki_note_id)
+            if _normalize_text(existing.get("answer", "")) == _normalize_text(answer):
+                return "keep", existing
+            return "replace", existing
+
+    similar = [
+        (_question_similarity(question, existing.get("front", "")), existing)
+        for existing in unused
+    ]
+    if similar:
+        score, existing = max(similar, key=lambda item: item[0])
+        if score >= 0.86:
+            anki_note_id = existing.get("anki_note_id")
+            if isinstance(anki_note_id, int):
+                used_existing_ids.add(anki_note_id)
+            if _normalize_text(existing.get("answer", "")) == _normalize_text(answer):
+                return "keep", existing
+            return "replace", existing
+
+    return "add", None
+
+
+def _semantic_card_changes(
+    *,
+    new_cards: List[Dict],
+    existing_cards: List[Dict],
+    model: str = DEFAULT_MODEL,
+) -> Dict[int, tuple[str, Optional[Dict]]]:
+    """Use the LLM to semantically map generated cards to committed cards."""
+    if not new_cards or not existing_cards:
+        return {}
+
+    payload = {
+        "existing_cards": [
+            {
+                "anki_note_id": card.get("anki_note_id"),
+                "question": card.get("front", ""),
+                "answer": card.get("answer", ""),
+                "source": card.get("source", ""),
+            }
+            for card in existing_cards
+        ],
+        "new_cards": [
+            {
+                "new_index": i,
+                "target": card.get("target", ""),
+                "question": card.get("question", ""),
+                "answer": card.get("answer", ""),
+                "source": card.get("source", ""),
+            }
+            for i, card in enumerate(new_cards)
+        ],
+    }
+
+    try:
+        result = chat_json([
+            {"role": "system", "content": MATCH_CARDS_SYSTEM},
+            {"role": "user", "content": json.dumps(payload)},
+        ], model=model, temperature=0.0)
+    except Exception as exc:
+        print(f"      WARNING: semantic card matching failed: {exc}")
+        return {}
+
+    existing_by_id = {}
+    for card in existing_cards:
+        try:
+            anki_note_id = int(card.get("anki_note_id"))
+        except (TypeError, ValueError):
+            continue
+        existing_by_id[anki_note_id] = card
+    matches: Dict[int, tuple[str, Optional[Dict]]] = {}
+    used_existing_ids: set[int] = set()
+    for match in result.get("matches", []):
+        try:
+            new_index = int(match.get("new_index"))
+        except (TypeError, ValueError):
+            continue
+        if new_index < 0 or new_index >= len(new_cards):
+            continue
+
+        action = str(match.get("action", "")).strip().lower()
+        if action not in {"keep", "replace", "add"}:
+            continue
+
+        try:
+            existing_id = int(match.get("existing_anki_note_id"))
+        except (TypeError, ValueError):
+            existing_id = None
+        if action == "add":
+            matches[new_index] = ("add", None)
+            continue
+
+        existing = existing_by_id.get(existing_id)
+        if existing is None or existing_id in used_existing_ids:
+            continue
+        used_existing_ids.add(existing_id)
+        matches[new_index] = (action, existing)
+
+    return matches
 
 
 def _validating_source(card: Dict, *, config_path: str) -> str:
@@ -244,9 +419,31 @@ def process_note(
     existing_cards = []
     if note_entry and note_entry.cards:
         existing_cards = [
-            {"concept_key": c.concept_key, "front": c.front, "source": c.source}
+            {
+                "anki_note_id": c.anki_note_id,
+                "concept_key": c.concept_key,
+                "content_hash": c.content_hash,
+                "front": c.front,
+                "answer": c.answer,
+                "source": c.source,
+            }
             for c in note_entry.cards
         ]
+    if note.deck:
+        try:
+            regular_cards = regular_cards_for_deck(note.deck)
+        except AnkiConnectError as exc:
+            print(f"      WARNING: could not load regular Anki cards for deck {note.deck}: {exc}")
+            regular_cards = []
+        seen_ids = {
+            card.get("anki_note_id")
+            for card in existing_cards
+            if card.get("anki_note_id") is not None
+        }
+        for card in regular_cards:
+            if card.get("anki_note_id") not in seen_ids:
+                existing_cards.append(card)
+                seen_ids.add(card.get("anki_note_id"))
 
     is_new_note = len(existing_cards) == 0
 
@@ -258,18 +455,65 @@ def process_note(
         rel_path=note.rel_path, deck=note.deck, is_new_note=is_new_note
     )
 
-    # Parse cards
+    generated_cards = []
     for card in result.get("cards", []):
+        generated_cards.append({
+            "target": card.get("target", ""),
+            "question": card.get("Q", ""),
+            "answer": card.get("A", ""),
+            "source": _validating_source(card, config_path=config_path),
+        })
+
+    semantic_matches: Dict[int, tuple[str, Optional[Dict]]] = {}
+    if not is_new_note:
+        semantic_matches = _semantic_card_changes(
+            new_cards=generated_cards,
+            existing_cards=existing_cards,
+            model=model,
+        )
+
+    # Parse cards
+    used_existing_ids: set[int] = set()
+    for i, card in enumerate(generated_cards):
         target = card.get("target", "")
-        question = card.get("Q", "")
-        answer = card.get("A", "")
-        source = _validating_source(card, config_path=config_path)
+        question = card.get("question", "")
+        answer = card.get("answer", "")
+        source = card.get("source", "")
+
+        action = "add"
+        replacement = None
+        if not is_new_note:
+            semantic = semantic_matches.get(i)
+            if semantic:
+                action, replacement = semantic
+                if replacement and isinstance(replacement.get("anki_note_id"), int):
+                    used_existing_ids.add(replacement["anki_note_id"])
+            else:
+                action, replacement = _classify_card_change(
+                    question=question,
+                    answer=answer,
+                    source=source,
+                    existing_cards=existing_cards,
+                    used_existing_ids=used_existing_ids,
+                )
+            if action == "keep":
+                continue
 
         proposals.proposals.append(CardProposal(
             target=target,
             question=question,
             answer=answer,
             source=source,
+            action=action,
+            replaces_anki_note_id=(
+                replacement.get("anki_note_id") if replacement else None
+            ),
+            replaces_front=(
+                replacement.get("front", "") if replacement else ""
+            ),
+            replaces_answer=(
+                replacement.get("answer", "") if replacement else ""
+            ),
         ))
 
     # Parse audit trail
@@ -306,8 +550,7 @@ def process_all_notes(
     all_proposals = []
     for note in diff.changed:
         props = process_note(note, index, model=model, config_path=config_path)
-        if props.proposals:
-            all_proposals.append(props)
+        all_proposals.append(props)
     return all_proposals
 
 

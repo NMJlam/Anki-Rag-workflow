@@ -4,7 +4,7 @@ Flow:
   1. Parse New cards.md + Changed cards.md (Q/A/source format).
   2. Backup collection via AnkiConnect exportPackage — abort if it fails.
   3. Ensure 'Basic (tracked)' model exists; ensure target decks exist.
-  4. For changed notes: delete old cards, add new ones.
+  4. For changed notes: replace only explicitly listed old cards, add new ones.
   5. For new notes: add all cards.
   6. Update SQLite state with new card entries.
   7. Move applied entries to Anki sync log.md; trigger AnkiWeb sync.
@@ -59,15 +59,29 @@ class ParsedCard:
     question: str         # direct question about the target
     answer: str           # answer drawn from the proposition
     source: str           # verbatim original bullet
+    replaces_anki_note_id: Optional[int] = None
 
 
 # ------------------------------------------------------------------
 # Parser
 # ------------------------------------------------------------------
 
-# Matches: ## ++ from [[NoteTitle]]      deck: SomeDeck
-_HEADER_RE = re.compile(
-    r"^##\s*\+\+\s*from\s*\[\[(.+?)\]\]\s+deck:\s*(.+)$"
+# Matches:
+#   ## ++ from [[NoteTitle]]      deck: SomeDeck
+#   ## ++ add from [[NoteTitle]]      deck: SomeDeck
+#   ## ++ replace from [[NoteTitle]]      deck: SomeDeck
+_ADD_HEADER_RE = re.compile(
+    r"^##\s*\+\+(?:\s+(?:add|replace))?\s+from\s*\[\[(.+?)\]\]\s+deck:\s*(.+)$"
+)
+
+# Matches: ## ~~ replace card 123 from [[NoteTitle]]      deck: SomeDeck
+_REPLACE_HEADER_RE = re.compile(
+    r"^##\s*~~\s*replace\s+card\s+(\d+)\s+from\s*\[\[(.+?)\]\]\s+deck:\s*(.+)$"
+)
+
+# Matches: > -- card 123 from [[NoteTitle]]      deck: SomeDeck
+_REPLACE_CALLOUT_RE = re.compile(
+    r"^>\s*--\s*card\s+(\d+)\s+from\s*\[\[(.+?)\]\]\s+deck:\s*(.+)$"
 )
 
 # Matches: Q: ...
@@ -90,6 +104,8 @@ def parse_diff_cards(content: str) -> List[ParsedCard]:
     i = 0
     current_title = ""
     current_deck = ""
+    current_replaces_anki_note_id: Optional[int] = None
+    pending_replaces_anki_note_id: Optional[int] = None
 
     while i < len(lines):
         line = lines[i]
@@ -100,11 +116,29 @@ def parse_diff_cards(content: str) -> List[ParsedCard]:
                 i += 1
                 continue
 
+        cm = _REPLACE_CALLOUT_RE.match(line)
+        if cm:
+            pending_replaces_anki_note_id = int(cm.group(1))
+            i += 1
+            continue
+
         # Card header
-        m = _HEADER_RE.match(line)
+        m = _ADD_HEADER_RE.match(line)
         if m:
             current_title = m.group(1)
             current_deck = m.group(2).strip()
+            if "← pick" in current_deck:
+                current_deck = current_deck.replace("← pick", "").strip()
+            current_replaces_anki_note_id = pending_replaces_anki_note_id
+            pending_replaces_anki_note_id = None
+            i += 1
+            continue
+
+        rm = _REPLACE_HEADER_RE.match(line)
+        if rm:
+            current_replaces_anki_note_id = int(rm.group(1))
+            current_title = rm.group(2)
+            current_deck = rm.group(3).strip()
             if "← pick" in current_deck:
                 current_deck = current_deck.replace("← pick", "").strip()
             i += 1
@@ -146,6 +180,7 @@ def parse_diff_cards(content: str) -> List[ParsedCard]:
                     question=question,
                     answer=answer,
                     source=source,
+                    replaces_anki_note_id=current_replaces_anki_note_id,
                 ))
             continue
 
@@ -198,6 +233,21 @@ def _find_rel_path_in_vault(note_title: str, vault: Path) -> Optional[str]:
         if md.stem == note_title:
             return str(md.relative_to(vault)).replace("\\", "/")
     return None
+
+
+def _remove_card_from_index(
+    index: SyncIndex,
+    *,
+    rel_path: str,
+    anki_note_id: int,
+) -> None:
+    note_entry = index.get_note(rel_path)
+    if note_entry is None:
+        return
+    note_entry.cards = [
+        card for card in note_entry.cards
+        if card.anki_note_id != anki_note_id
+    ]
 
 
 # ------------------------------------------------------------------
@@ -285,24 +335,7 @@ def apply_commit(
     committed_states: List[CardState] = []
     committed_note_ids: dict[str, int] = {}
 
-    # --- Changed notes: delete ALL old cards for affected notes, then add new ---
-    changed_note_titles = {c.note_title for c in changed_cards}
-    for title in changed_note_titles:
-        rel_path = _resolve_rel_path(title, index)
-        if rel_path:
-            note_entry = index.get_note(rel_path)
-            if note_entry and note_entry.cards:
-                old_ids = [c.anki_note_id for c in note_entry.cards]
-                print(f"  deleting {len(old_ids)} old card(s) for [[{title}]]")
-                try:
-                    delete_notes(old_ids)
-                except AnkiConnectError as exc:
-                    print(f"    WARNING: delete failed: {exc}")
-                for oid in old_ids:
-                    log_entries.append(f"-- deleted card {oid} from [[{title}]]")
-                note_entry.cards.clear()
-
-    # Add changed cards
+    # --- Changed cards: replace only listed old card ids, otherwise add ---
     for card in changed_cards:
         if not card.deck:
             print(f"  SKIPPING [[{card.note_title}]] — no deck")
@@ -321,6 +354,26 @@ def apply_commit(
             print(f"  WARNING: add failed: {exc}")
             continue
 
+        if card.replaces_anki_note_id is not None:
+            print(
+                f"  deleting old card {card.replaces_anki_note_id} "
+                f"for [[{card.note_title}]]"
+            )
+            try:
+                delete_notes([card.replaces_anki_note_id])
+            except AnkiConnectError as exc:
+                print(f"    WARNING: delete failed: {exc}")
+            else:
+                if rel_path:
+                    _remove_card_from_index(
+                        index,
+                        rel_path=rel_path,
+                        anki_note_id=card.replaces_anki_note_id,
+                    )
+                log_entries.append(
+                    f"-- deleted card {card.replaces_anki_note_id} from [[{card.note_title}]]"
+                )
+
         # Update card state
         if rel_path:
             note_entry = index.get_note(rel_path)
@@ -336,6 +389,7 @@ def apply_commit(
                 concept_key=card.answer,
                 content_hash=c_hash,
                 front=card.question,
+                answer=card.answer,
                 source=card.source,
             ))
             note_entry.last_processed = now.isoformat()
@@ -388,6 +442,7 @@ def apply_commit(
             concept_key=card.answer,
             content_hash=c_hash,
             front=card.question,
+            answer=card.answer,
             source=card.source,
         ))
         note_entry.last_processed = now.isoformat()
