@@ -21,8 +21,10 @@ class VectorStore:
         self._metas: List[Dict] = []
 
     def add(self, vectors: np.ndarray, metas: List[Dict]) -> None:
-        assert vectors.shape[0] == len(metas)
-        assert vectors.shape[1] == self.dim
+        if vectors.shape[0] != len(metas):
+            raise ValueError(f"vectors count {vectors.shape[0]} != metas count {len(metas)}")
+        if vectors.shape[1] != self.dim:
+            raise ValueError(f"vector dim {vectors.shape[1]} != expected {self.dim}")
         if self._vectors is None:
             self._vectors = vectors
         else:
