@@ -1,10 +1,10 @@
 """Brick 2 — scan the Obsidian vault and diff against SQLite card state.
 
-Walk the vault, hash each .md note, compare to the index, and emit lists of
+Walk the vault, hash each .md note, compare to card state, and emit lists of
 created / edited / deleted notes.  Resolve each note's deck from its folder
 path, with frontmatter `deck:` override.
 
-Run standalone:  python -m sync.vault [vault_path] [index_path]
+Run standalone:  python -m sync.vault [vault_path] [state_path]
 """
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
+from .config import load_app_config
 from .index import SyncIndex, load_index, state_db_path
 
 # Directories and files to skip when walking the vault.
@@ -75,7 +76,7 @@ class ChangedNote:
 
 @dataclass
 class DeletedNote:
-    """A note that exists in the index but is gone from the vault."""
+    """A note that exists in card state but is gone from the vault."""
     rel_path: str
 
 
@@ -102,7 +103,7 @@ class VaultDiff:
 
 
 def scan_vault(vault_path: str | Path, index: SyncIndex) -> VaultDiff:
-    """Walk the vault and diff against the index.
+    """Walk the vault and diff against card state.
 
     Returns a VaultDiff with created, edited, and deleted notes.
     """
@@ -123,7 +124,7 @@ def scan_vault(vault_path: str | Path, index: SyncIndex) -> VaultDiff:
             continue
 
         rel_str = str(rel)  # OS-native separators on disk, but we normalize
-        rel_str = rel_str.replace("\\", "/")  # always forward slashes in index
+        rel_str = rel_str.replace("\\", "/")  # always forward slashes in state
         seen_paths.add(rel_str)
 
         content = md_file.read_text(errors="replace")
@@ -146,7 +147,7 @@ def scan_vault(vault_path: str | Path, index: SyncIndex) -> VaultDiff:
             ))
         # else: unchanged, skip
 
-    # Deleted notes: in index but not on disk.
+    # Deleted notes: in state but not on disk.
     for idx_path in index.all_paths():
         if idx_path not in seen_paths:
             diff.deleted.append(DeletedNote(rel_path=idx_path))
@@ -159,13 +160,14 @@ def scan_vault(vault_path: str | Path, index: SyncIndex) -> VaultDiff:
 # ------------------------------------------------------------------
 
 if __name__ == "__main__":
-    vault_dir = sys.argv[1] if len(sys.argv) > 1 else "/Users/root1/Obsidian/quant"
-    index_path = sys.argv[2] if len(sys.argv) > 2 else "data/sync_index.json"
+    app_config = load_app_config()
+    vault_dir = sys.argv[1] if len(sys.argv) > 1 else app_config.vault_path
+    state_path = sys.argv[2] if len(sys.argv) > 2 else app_config.state_path
 
     print(f"Vault:  {vault_dir}")
-    print(f"State:  {state_db_path(index_path)}")
+    print(f"State:  {state_db_path(state_path)}")
 
-    idx = load_index(index_path)
+    idx = load_index(state_path)
     result = scan_vault(vault_dir, idx)
 
     print(f"\n  {result.summary()}")

@@ -1,0 +1,16 @@
+# Offline smoke-test config. Uses the hashing embedder (no model download).
+# Run:  uv run python tests/make_sample_pdf.py
+#       uv run python -m rag.ingest tests/books.test.toml
+#       uv run python -m rag.query "who handles a TLB miss" -k 1 --config tests/books.test.toml
+[rag]
+embedder = "hashing"
+index_dir = "../data/test_index"
+chunk_chars = 1200
+chunk_overlap = 200
+books_dir = "../data/pdfs"
+
+[[rag.book_overrides]]
+path = "sample.pdf"
+name = "Sample Textbook"
+label = ""
+page_offset = 2

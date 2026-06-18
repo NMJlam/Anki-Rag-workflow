@@ -5,7 +5,7 @@ For each changed note:
   2. Generates direct Q&A cards for linked, highlighted, or named theory targets.
   3. Returns surviving cards + audit trail (pruned / not-self-contained / skipped).
 
-Run standalone:  python -m reason.crosscheck [vault_path] [index_path]
+Run standalone:  python -m reason.crosscheck [vault_path] [state_path]
 """
 from __future__ import annotations
 
@@ -15,10 +15,10 @@ import sys
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+from rag.query import retrieve
+from sync.config import load_app_config
 from sync.index import SyncIndex, load_index, state_db_path
 from sync.vault import ChangedNote, VaultDiff, scan_vault
-
-from rag.query import retrieve
 
 from .llm import chat_json, DEFAULT_MODEL
 
@@ -237,7 +237,7 @@ def process_note(
     index: SyncIndex,
     *,
     model: str = DEFAULT_MODEL,
-    config_path: str = "books.yaml",
+    config_path: str = "config.toml",
 ) -> NoteProposals:
     """Full pipeline for one changed note: generate cards from propositions."""
     note_entry = index.get_note(note.rel_path)
@@ -300,7 +300,7 @@ def process_all_notes(
     index: SyncIndex,
     *,
     model: str = DEFAULT_MODEL,
-    config_path: str = "books.yaml",
+    config_path: str = "config.toml",
 ) -> List[NoteProposals]:
     """Process all changed notes and return proposals."""
     all_proposals = []
@@ -316,13 +316,14 @@ def process_all_notes(
 # ------------------------------------------------------------------
 
 if __name__ == "__main__":
-    vault_dir = sys.argv[1] if len(sys.argv) > 1 else "/Users/root1/Obsidian/quant"
-    index_path = sys.argv[2] if len(sys.argv) > 2 else "data/sync_index.json"
+    app_config = load_app_config()
+    vault_dir = sys.argv[1] if len(sys.argv) > 1 else app_config.vault_path
+    state_path = sys.argv[2] if len(sys.argv) > 2 else app_config.state_path
 
     print(f"Vault:  {vault_dir}")
-    print(f"State:  {state_db_path(index_path)}")
+    print(f"State:  {state_db_path(state_path)}")
 
-    idx = load_index(index_path)
+    idx = load_index(state_path)
     diff = scan_vault(vault_dir, idx)
     print(f"  {diff.summary()}")
 

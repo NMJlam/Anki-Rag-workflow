@@ -141,7 +141,7 @@ def check_note(
     content: str,
     *,
     model: str = DEFAULT_MODEL,
-    config_path: str = "books.yaml",
+    config_path: str = "config.toml",
 ) -> NoteReport:
     """Full check pipeline for one note: extract claims → RAG → verdict."""
     report = NoteReport(rel_path=rel_path)
@@ -183,7 +183,7 @@ def check_all_notes(
     vault_path: str | Path,
     *,
     model: str = DEFAULT_MODEL,
-    config_path: str = "books.yaml",
+    config_path: str = "config.toml",
     paths: Optional[List[str]] = None,
 ) -> List[NoteReport]:
     """Check all (or specific) notes in the vault for factual errors.

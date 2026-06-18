@@ -1,0 +1,15 @@
+[paths]
+# Target Obsidian vault folder.
+vault = "/Users/root1/Obsidian/quant"
+
+# Local sync/card state. Relative paths are resolved from this config file.
+state = "data/card_state.sqlite"
+
+[rag]
+# Textbook/RAG config. PDFs under books dir are discovered automatically.
+embedder = "sentence-transformers"
+model = "BAAI/bge-small-en-v1.5"
+index_dir = "data/index"
+chunk_chars = 1200
+chunk_overlap = 200
+books_dir = "books"

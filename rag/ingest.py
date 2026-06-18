@@ -73,7 +73,7 @@ def ingest(cfg: Config) -> VectorStore:
                       file=sys.stderr)
 
     if not texts:
-        raise SystemExit("No text ingested. Check book paths in books.yaml.")
+        raise SystemExit("No text ingested. Check books_dir and book overrides in config.toml.")
 
     print(f"  embedding {len(texts)} chunks with {embedder.model_name} ...")
     vectors = embedder.encode(texts)
@@ -84,6 +84,6 @@ def ingest(cfg: Config) -> VectorStore:
 
 
 if __name__ == "__main__":
-    cfg = load_config(sys.argv[1] if len(sys.argv) > 1 else "books.yaml")
+    cfg = load_config(sys.argv[1] if len(sys.argv) > 1 else "config.toml")
     print("Ingesting...")
     ingest(cfg)

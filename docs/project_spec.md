@@ -50,20 +50,20 @@ Two machines, two **separate** sync channels.
 │    writes the two .md diff files into the vault.                  │
 │  NO Anki here. Nothing destructive ever runs at night.            │
 └───────────────────────────┬───────────────────────────────────────┘
-                           │  Syncthing (vault + sync_index.json, both ways)
+                           │  Syncthing (vault + card_state.sqlite, both ways)
                            ▼
 ┌─────────────── LAPTOP (macOS, where the user is) ─────────────────┐
 │  • the two .md files arrive overnight                            │
 │  • user reviews / edits / approves in the morning                │
 │  • user runs COMMIT here ← Brick 4                               │
-│    backup → add/delete via AnkiConnect → update index → log      │
+│    backup → add/delete via AnkiConnect → update state → log      │
 │  • Anki then syncs to AnkiWeb → phone                            │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
 Rules that fall out of this topology — **do not violate**:
 
-- **Syncthing** (free, P2P, bidirectional) syncs the **vault + `sync_index.json`**.
+- **Syncthing** (free, P2P, bidirectional) syncs the **vault + `card_state.sqlite`**.
 - **AnkiWeb** (Anki's own sync) is the *only* thing that moves the Anki
   collection between devices. **Never let Syncthing or any file-sync touch
   Anki's `collection.anki2`** — it's a live SQLite DB and copying it while Anki
@@ -84,12 +84,12 @@ Build and test on the Mac first. The code should not hard-code host paths.
 
 ```
         ┌──────────── NIGHTLY PROPOSE (≈03:00, unattended) ───────────┐
-        │ [1] scan vault → hash each note → diff vs sync_index.json     │
+        │ [1] scan vault → hash each note → diff vs card_state.sqlite     │
         │      → list of created/edited notes since last run           │
         │ [2] for each changed note: LLM extracts atomic concepts      │
         │ [3] for each concept: RAG retrieve() → passages w/ pages →    │
         │      LLM verdict: consistent ✓ | adds detail | contradicts   │
-        │ [4] route via sync_index:                                    │
+        │ [4] route via card state:                                    │
         │       note has NO managed card → New cards.md      (++)      │
         │       note already has card(s) → Changed cards.md  (-- / ++) │
         │ [5] write the two .md files into the vault (diff format §7)   │
@@ -99,7 +99,7 @@ Build and test on the Mac first. The code should not hard-code host paths.
         │ [6] user edits/deletes lines they don't want in the .md files │
         │ [7] run commit → BACKUP Anki first → for each ++ addNote,     │
         │      for each -- deleteNotes(card's note id) via AnkiConnect  │
-        │ [8] update sync_index.json (note→card map, new hashes);      │
+        │ [8] update card_state.sqlite (note→card map, new hashes);      │
         │      move applied entries → Anki sync log.md; trigger sync    │
         └───────────────────────────────────────────────────────────────┘
 ```
@@ -117,7 +117,7 @@ These were decided with the user. Don't relitigate them in code.
    changed material resurfaces soon instead of hiding behind a long interval.
    The user explicitly wants the "surprise" of re-learning edited facts.
 3. **New vs Changed routing** is decided by whether the source note already has
-   managed cards (per `sync_index.json`), not by the LLM.
+   managed cards (per `card_state.sqlite`), not by the LLM.
 4. **Books verify/enrich, never auto-correct the note.** A note-vs-book conflict
    is *surfaced* to the user, never silently fixed.
 5. **The diff is `++` / `--`.** Every `--` carries a reason:
@@ -241,7 +241,7 @@ Back:
 The `-- DELETE` block shows the **exact existing card** (front/back). This is a
 safety feature: if card-matching ever fingers the wrong card, the user catches it
 at review before anything is deleted. The real `card …id` is filled from
-`sync_index.json`.
+`card_state.sqlite`.
 
 ## 8. Current status — Brick 1 (RAG retrieval): BUILT & VERIFIED
 
@@ -250,8 +250,9 @@ instructions. Verified end-to-end: per-page chunking, page-offset arithmetic, an
 page-exact citations all round-trip correctly on a controlled test PDF.
 
 Modules:
-- `rag/config.py` — loads `books.yaml` (global settings + per-book/per-file
-  `page_offset` calibration). `printed_page = pdf_page(1-based) − page_offset`.
+- `rag/config.py` — loads `config.toml` RAG settings, discovers PDFs from
+  `books_dir`, and applies per-book `page_offset` calibration.
+  `printed_page = pdf_page(1-based) − page_offset`.
 - `rag/embedder.py` — `SentenceTransformerEmbedder` (real, default,
   `all-MiniLM-L6-v2`, runs locally) and `HashingEmbedder` (offline, for tests
   only). `get_embedder(name)`.
@@ -269,7 +270,7 @@ hits = retrieve("who handles a TLB miss", k=5)
 # 'citation' is already formatted: "OSTEP · vm-tlbs · p.7"
 ```
 
-Config files: `books.yaml` (real), `books.test.yaml` (offline smoke test).
+Config files: `config.toml` (real), `books.test.toml` (offline smoke test).
 **Calibration is a manual per-book step** — verify one citation by hand against
 the printed page (README §6). OSTEP per-chapter PDFs usually `page_offset: 0`;
 single-file Manning books need the front-matter offset.
@@ -280,26 +281,26 @@ Suggested package layout to add:
 
 ```
 sync/        # Brick 2: vault scan + index
-  vault.py        scan notes, compute hashes, diff vs sync_index
-  index.py        read/write sync_index.json (schema §10)
+  vault.py        scan notes, compute hashes, diff vs card state
+  index.py        read/write card_state.sqlite (schema §10)
 reason/      # Brick 3: concept extraction + cross-check (OpenRouter)
   llm.py          OpenRouter client (OpenAI-compatible), structured output
   crosscheck.py   note + retrieve() → concepts + verdicts → proposals
   emit.py         write New cards.md / Changed cards.md (format §7)
 commit/      # Brick 4: apply to Anki (LAPTOP only)
   anki.py         AnkiConnect wrapper (addNote, deleteNotes, createModel, sync)
-  apply.py        parse approved .md, backup, apply, update index, write log
+  apply.py        parse approved .md, backup, apply, update state, write log
 propose.py   # orchestrates bricks 2+3 (the nightly job)
 commit.py    # entrypoint for brick 4 (user runs this after approval)
 ```
 
-### Brick 2 — vault scan + `sync_index.json`
+### Brick 2 — vault scan + `card_state.sqlite`
 
 - Walk the vault (configurable path; ignore `.obsidian/`, the two diff files,
   `Anki sync log.md`, and any `templates/`).
 - For each `.md` note compute `sha256` of its content. Compare to
-  `sync_index.json`. Emit a list of **created** (not in index) and **edited**
-  (hash changed) notes. Deleted notes (in index, file gone) → later propose
+  `card_state.sqlite`. Emit a list of **created** (not in state) and **edited**
+  (hash changed) notes. Deleted notes (in state, file gone) → later propose
   archiving their cards (low priority; can stub initially).
 - Resolve each note's **deck** from its folder, with frontmatter `deck:`
   override.
@@ -320,7 +321,7 @@ commit.py    # entrypoint for brick 4 (user runs this after approval)
      verdict: `consistent` | `adds_detail` | `contradicts`, plus the specific
      citation (`book`, `label`, `printed_page`) when the verdict is
      `adds_detail`/`contradicts`.
-  3. Pull the note's existing managed cards from `sync_index.json` (front/back).
+  3. Pull the note's existing managed cards from `card_state.sqlite` (front/back).
      Ask the LLM whether each concept maps to an existing card (→ replace, goes
      to Changed) or is new (→ goes to New). On a fresh vault every concept is new.
 - **Routing + emit (`reason/emit.py`):** write the two files in the **exact
@@ -343,7 +344,7 @@ commit.py    # entrypoint for brick 4 (user runs this after approval)
 ```
 
   The orchestrator (not the LLM) makes the final New-vs-Changed call using
-  `maps_to_existing_card` AND `sync_index` (the index is authoritative).
+  `maps_to_existing_card` and `card_state.sqlite` (card state is authoritative).
 
 ### Brick 4 — commit to Anki (laptop only)
 
@@ -362,10 +363,10 @@ commit.py    # entrypoint for brick 4 (user runs this after approval)
      file, and abort the commit if the backup step fails.
   3. Ensure `Basic (tracked)` model exists (create if missing) and ensure each
      target deck exists (`createDeck`).
-  4. For each `--`: `deleteNotes([note_id])` (the id from `sync_index`).
+  4. For each `--`: `deleteNotes([note_id])` (the id from `card_state.sqlite`).
      For each `++`: `addNote(...)` with the four fields; populate `SourceNote`
      and `ContentHash`. Use `options.allowDuplicate=false`.
-  5. Update `sync_index.json`: new hashes for processed notes; refresh each
+  5. Update `card_state.sqlite`: new hashes for processed notes; refresh each
      note's `cards` list with new `anki_note_id`/`concept_key`/`content_hash`.
   6. Move applied entries from the two diff files into `Anki sync log.md`
      (timestamped). Leave un-acted entries pending.
@@ -373,32 +374,22 @@ commit.py    # entrypoint for brick 4 (user runs this after approval)
 - Make commit **idempotent and resumable**: if it dies mid-run, re-running
   shouldn't double-add (check `ContentHash`/existing notes).
 
-## 10. `sync_index.json` schema (authoritative state)
+## 10. `card_state.sqlite` schema (authoritative state)
 
-```json
-{
-  "version": 1,
-  "notes": {
-    "Operating Systems/TLB.md": {
-      "hash": "<sha256 of note content>",
-      "last_processed": "2026-06-18T03:00:00Z",
-      "deck": "Operating Systems",
-      "cards": [
-        {
-          "anki_note_id": 1718000000023,
-          "concept_key": "tlb-miss-handler",
-          "content_hash": "<sha256 of Front+Back>",
-          "front": "Who handles a TLB miss — and what does it depend on?"
-        }
-      ]
-    }
-  }
-}
-```
+`card_state.sqlite` is the sole source of truth for tracked notes and cards.
+At a high level it contains:
 
-The `cards` array is what makes "delete the *right* old card" deterministic and
-what routes New vs Changed. Keep `SourceNote`/`ContentHash` on the Anki side in
-sync with this so the system can recover if the index is ever lost.
+- `meta`: schema version and migration markers.
+- `notes`: vault-relative note path, deck, committed file hash, pending file
+  hash, last seen file hash, and last processed timestamp.
+- `cards`: proposed/committed/rejected card rows, including note path, deck,
+  question, answer, source, content hash, concept key, status, timestamps, and
+  the Anki note id for committed cards.
+
+The committed `cards` rows are what make "delete the *right* old card"
+deterministic and what routes New vs Changed. Keep `SourceNote`/`ContentHash` on
+the Anki side in sync with this so the system can recover if card state is ever
+lost.
 
 ## 11. Constraints & gotchas (read before coding)
 

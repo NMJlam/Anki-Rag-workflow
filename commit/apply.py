@@ -1,4 +1,4 @@
-"""Brick 4 — parse approved diff files, backup Anki, apply, update index, log.
+"""Brick 4 — parse approved diff files, backup Anki, apply, update state, log.
 
 Flow:
   1. Parse New cards.md + Changed cards.md (Q/A/source format).
@@ -9,7 +9,7 @@ Flow:
   6. Update SQLite state with new card entries.
   7. Move applied entries to Anki sync log.md; trigger AnkiWeb sync.
 
-Run standalone:  python -m commit.apply [vault_path] [index_path]
+Run standalone:  python -m commit.apply [vault_path] [state_path]
 """
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
+from sync.config import load_app_config
 from sync.index import (
     CardEntry,
     NoteEntry,
@@ -205,18 +206,21 @@ def _find_rel_path_in_vault(note_title: str, vault: Path) -> Optional[str]:
 
 def apply_commit(
     vault_path: str | Path,
-    index_path: str | Path = "data/sync_index.json",
+    state_path: str | Path | None = None,
     *,
     skip_backup: bool = False,
     skip_sync: bool = False,
 ) -> None:
-    """Full commit flow: parse → backup → apply → update index → log."""
+    """Full commit flow: parse → backup → apply → update state → log."""
+    if state_path is None:
+        state_path = load_app_config().state_path
+
     vault = Path(vault_path).resolve()
     now = datetime.now(timezone.utc)
     ts = now.strftime("%Y-%m-%d %H:%M")
 
-    # Load index
-    index = load_index(index_path)
+    # Load card state
+    index = load_index(state_path)
 
     # ------------------------------------------------------------------
     # 1. Parse diff files
@@ -321,7 +325,7 @@ def apply_commit(
             print(f"  WARNING: add failed: {exc}")
             continue
 
-        # Update index
+        # Update card state
         if rel_path:
             note_entry = index.get_note(rel_path)
             if note_entry is None:
@@ -370,7 +374,7 @@ def apply_commit(
             print(f"  WARNING: add failed: {exc}")
             continue
 
-        # Update index
+        # Update card state
         if rel_path is None:
             rel_path = f"{card.deck}/{card.note_title}.md"
 
@@ -413,14 +417,14 @@ def apply_commit(
 
     if committed_states:
         committed_count = mark_cards_committed(
-            default_state_path(index_path),
+            default_state_path(state_path),
             committed_states,
             anki_note_ids=committed_note_ids,
         )
         print(f"  recorded {committed_count} committed card(s)")
 
-    save_index(index, index_path)
-    print(f"  updated {state_db_path(index_path)}")
+    save_index(index, state_path)
+    print(f"  updated {state_db_path(state_path)}")
 
     # ------------------------------------------------------------------
     # 6. Write log + clear diff files
@@ -462,9 +466,10 @@ def apply_commit(
 # ------------------------------------------------------------------
 
 if __name__ == "__main__":
-    vault_dir = sys.argv[1] if len(sys.argv) > 1 else "/Users/root1/Obsidian/quant"
-    idx_path = sys.argv[2] if len(sys.argv) > 2 else "data/sync_index.json"
+    app_config = load_app_config()
+    vault_dir = sys.argv[1] if len(sys.argv) > 1 else app_config.vault_path
+    state_path = sys.argv[2] if len(sys.argv) > 2 else app_config.state_path
 
     print(f"Vault:  {vault_dir}")
-    print(f"State:  {state_db_path(idx_path)}")
-    apply_commit(vault_dir, idx_path)
+    print(f"State:  {state_db_path(state_path)}")
+    apply_commit(vault_dir, state_path)

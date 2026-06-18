@@ -25,8 +25,8 @@ class CardState:
     content_hash: str
 
 
-def default_state_path(index_path: str | Path) -> Path:
-    return state_db_path(index_path)
+def default_state_path(state_path: str | Path) -> Path:
+    return state_db_path(state_path)
 
 
 def card_content_hash(source: str, answer: str) -> str:

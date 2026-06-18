@@ -2,12 +2,10 @@
 
 The public API intentionally keeps the old SyncIndex shape so callers can ask
 "what cards are currently committed for this note?" without knowing the storage
-details. Paths that used to point at ``sync_index.json`` now resolve to the
-SQLite database beside it.
+details. ``card_state.sqlite`` is the source of truth.
 """
 from __future__ import annotations
 
-import json
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -72,21 +70,16 @@ class SyncIndex:
         return self.notes.pop(rel_path, None)
 
 
-def state_db_path(index_path: str | Path) -> Path:
-    """Resolve legacy index paths to the single SQLite state DB."""
-    p = Path(index_path)
-    if p.suffix in {".sqlite", ".sqlite3", ".db"}:
-        return p
-    return p.parent / "card_state.sqlite"
+def state_db_path(state_path: str | Path) -> Path:
+    return Path(state_path)
 
 
-def _connect(index_path: str | Path) -> sqlite3.Connection:
-    path = state_db_path(index_path)
+def _connect(state_path: str | Path) -> sqlite3.Connection:
+    path = state_db_path(state_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.execute("PRAGMA foreign_keys = ON")
     init_db(conn)
-    _migrate_json_if_present(conn, index_path)
     return conn
 
 
@@ -239,67 +232,6 @@ def _migrate_legacy_card_state(conn: sqlite3.Connection) -> None:
     conn.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES ('legacy_card_state_migrated', '1')"
     )
-
-
-def _migrate_json_if_present(conn: sqlite3.Connection, index_path: str | Path) -> None:
-    p = Path(index_path)
-    if p.suffix != ".json" or not p.exists():
-        return
-    already_migrated = conn.execute(
-        "SELECT value FROM meta WHERE key = 'json_migrated_from'"
-    ).fetchone()
-    if already_migrated:
-        return
-
-    data = json.loads(p.read_text())
-    for rel_path, note in data.get("notes", {}).items():
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO notes (
-                rel_path, deck, committed_file_hash, pending_file_hash,
-                last_seen_file_hash, last_processed
-            )
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                rel_path,
-                note.get("deck", ""),
-                note.get("hash", ""),
-                note.get("proposed_hash"),
-                note.get("proposed_hash") or note.get("hash", ""),
-                note.get("last_processed", ""),
-            ),
-        )
-        for card in note.get("cards", []):
-            conn.execute(
-                """
-                INSERT INTO cards (
-                    run_id, note_rel_path, note_title, deck, question, answer,
-                    source, card_content_hash, concept_key, front, status,
-                    proposed_at, committed_at, anki_note_id
-                )
-                VALUES ('json-migration', ?, ?, ?, ?, '', ?, ?, ?, ?, 'committed', ?, ?, ?)
-                """,
-                (
-                    rel_path,
-                    Path(rel_path).stem,
-                    note.get("deck", ""),
-                    card.get("front", ""),
-                    card.get("source", ""),
-                    card.get("content_hash", ""),
-                    card.get("concept_key", ""),
-                    card.get("front", ""),
-                    note.get("last_processed", ""),
-                    note.get("last_processed", ""),
-                    card.get("anki_note_id"),
-                ),
-            )
-    conn.execute(
-        "INSERT OR REPLACE INTO meta(key, value) VALUES ('json_migrated_from', ?)",
-        (str(p),),
-    )
-    conn.commit()
-
 
 def load_index(path: str | Path) -> SyncIndex:
     with _connect(path) as conn:

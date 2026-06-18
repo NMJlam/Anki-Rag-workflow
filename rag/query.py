@@ -23,7 +23,7 @@ def format_citation(meta: Dict) -> str:
     return " · ".join(parts)
 
 
-def retrieve(query: str, k: int = 5, config_path: str = "books.yaml") -> List[Dict]:
+def retrieve(query: str, k: int = 5, config_path: str = "config.toml") -> List[Dict]:
     cfg = load_config(config_path)
     store = VectorStore.load(cfg.index_dir)
 
@@ -33,7 +33,7 @@ def retrieve(query: str, k: int = 5, config_path: str = "books.yaml") -> List[Di
         raise SystemExit(
             f"Embedder dim {embedder.dim} != index dim {store.dim}. "
             f"You ingested with a different embedder ('{store.embedder_name}'). "
-            f"Re-ingest after changing the embedder in books.yaml."
+            f"Re-ingest after changing the embedder in config.toml."
         )
 
     qvec = embedder.encode([query])[0]
@@ -56,7 +56,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("query")
     ap.add_argument("-k", type=int, default=5)
-    ap.add_argument("--config", default="books.yaml")
+    ap.add_argument("--config", default="config.toml")
     ap.add_argument("--full", action="store_true", help="print full chunk text")
     args = ap.parse_args()
 

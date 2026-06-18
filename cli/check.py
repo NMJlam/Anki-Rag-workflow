@@ -4,8 +4,8 @@ Extracts claims from notes, cross-checks each against the textbook index,
 and inserts Obsidian callouts above the lines where errors are found.
 
 Usage:
-    uv run anki-check-notes [vault_path] [books_config]
-    uv run anki-check-notes [vault_path] [books_config] path/to/note.md ...
+    uv run anki-check-notes [vault_path] [config_path]
+    uv run anki-check-notes [vault_path] [config_path] path/to/note.md ...
 """
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from pathlib import Path
 
 from cli.check_markers import CALLOUT_MARKER
 from reason.check import check_all_notes, ClaimIssue, NoteReport
+from sync.config import load_app_config
 
 # ANSI colors for terminal output
 _RED = "\033[31m"
@@ -181,11 +182,15 @@ def _print_report(reports: list[NoteReport]) -> int:
 
 
 def check(
-    vault_path: str | Path = "/Users/root1/Obsidian/quant",
-    config_path: str = "books.yaml",
+    vault_path: str | Path | None = None,
+    config_path: str | Path | None = None,
     note_paths: list[str] | None = None,
 ) -> None:
     """Run the check pipeline."""
+    app_config = load_app_config()
+    vault_path = vault_path or app_config.vault_path
+    config_path = config_path or app_config.books_config
+
     vault_path = Path(vault_path).resolve()
     print(f"Vault:  {vault_path}")
     print(f"Books:  {config_path}")
@@ -230,8 +235,9 @@ def check(
 def main() -> None:
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
 
-    vault = args[0] if len(args) > 0 else "/Users/root1/Obsidian/quant"
-    config = args[1] if len(args) > 1 else "books.yaml"
+    app_config = load_app_config()
+    vault = args[0] if len(args) > 0 else app_config.vault_path
+    config = args[1] if len(args) > 1 else app_config.books_config
     note_paths = args[2:] if len(args) > 2 else None
 
     check(vault, config, note_paths)

@@ -7,7 +7,7 @@ The PDF has 5 pages:
   - Page 5 (printed p.3): TLB text  <-- the smoke test expects to find this
 
 Run:  uv run python tests/make_sample_pdf.py
-Then: uv run python -m rag.ingest tests/books.test.yaml
+Then: uv run python -m rag.ingest tests/books.test.toml
 """
 import os
 
