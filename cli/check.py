@@ -14,6 +14,7 @@ import sys
 from difflib import SequenceMatcher
 from pathlib import Path
 
+from cli.check_markers import CALLOUT_MARKER
 from reason.check import check_all_notes, ClaimIssue, NoteReport
 
 # ANSI colors for terminal output
@@ -26,8 +27,8 @@ _RESET = "\033[0m"
 # Regex for YAML frontmatter block at the top of a note.
 _FRONTMATTER_RE = re.compile(r"\A(---\s*\n.*?\n---\n?)", re.DOTALL)
 
-# Marker so we can strip old callouts on re-runs.
-_CALLOUT_MARKER = "<!-- anki-check -->"
+# Backwards-compatible name for tests and internal callers.
+_CALLOUT_MARKER = CALLOUT_MARKER
 
 _CALLOUT_TYPE = {
     "error": "danger",

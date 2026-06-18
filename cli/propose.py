@@ -13,11 +13,31 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from cli.check_markers import CALLOUT_MARKER
 from reason.crosscheck import process_all_notes
 from reason.emit import write_diff_files
 from sync.index import NoteEntry, load_index, save_index, state_db_path
 from sync.state import default_state_path, record_proposals
-from sync.vault import scan_vault
+from sync.vault import IGNORE_DIRS, IGNORE_FILES, scan_vault
+
+
+def find_unresolved_check_notes(vault_path: str | Path) -> list[str]:
+    """Return notes that still contain unresolved anki-check callouts."""
+    vault = Path(vault_path).resolve()
+    if not vault.is_dir():
+        raise FileNotFoundError(f"Vault not found: {vault}")
+
+    unresolved = []
+    for md_file in sorted(vault.rglob("*.md")):
+        rel = md_file.relative_to(vault)
+        if any(part in IGNORE_DIRS for part in rel.parts):
+            continue
+        if rel.name in IGNORE_FILES:
+            continue
+        if CALLOUT_MARKER in md_file.read_text(errors="replace"):
+            unresolved.append(str(rel).replace("\\", "/"))
+
+    return unresolved
 
 
 def propose(
@@ -30,6 +50,16 @@ def propose(
     print(f"Vault:  {vault_path}")
     print(f"State:  {state_db_path(index_path)}")
     print(f"Books:  {config_path}")
+
+    unresolved = find_unresolved_check_notes(vault_path)
+    if unresolved:
+        print(
+            "  unresolved anki-check error/warning callout(s) found — "
+            "resolve them before proposing cards"
+        )
+        for rel_path in unresolved:
+            print(f"  - {rel_path}")
+        return
 
     # Brick 2 — scan vault
     index = load_index(index_path)
