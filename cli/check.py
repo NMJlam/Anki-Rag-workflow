@@ -275,7 +275,7 @@ def check(
         print(f"{_GREEN}No issues found.{_RESET}")
     else:
         errors = sum(1 for r in reports for i in r.issues if i.severity == "error")
-        warnings = total - errors + broken_link_count
+        warnings = total - errors
         parts = []
         if errors:
             parts.append(f"{_RED}{errors} error(s){_RESET}")
