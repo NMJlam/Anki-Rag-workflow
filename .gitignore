@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Data (PDFs + generated indexes)
+data/
+books/
+
+# Environment
+.env
+.DS_Store
+
+# uv
+.python-version

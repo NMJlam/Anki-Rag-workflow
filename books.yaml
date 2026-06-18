@@ -1,0 +1,19 @@
+# Real config. Edit paths + page_offset per book, then: python -m rag.ingest
+#
+# embedder: use 'sentence-transformers' for real semantic retrieval (downloads
+# a small model once, then runs locally for free). Use 'hashing' only for the
+# offline smoke test.
+embedder: sentence-transformers
+model: BAAI/bge-small-en-v1.5    # better semantic quality than all-MiniLM-L6-v2
+index_dir: data/index
+chunk_chars: 1200                # max chars per sub-chunk within a page
+chunk_overlap: 200
+
+books:
+  # OSTEP as a single combined PDF. Printed page 1 is PDF page 22.
+  # page_offset = 21  (printed_page = pdf_page_1based - page_offset)
+  - name: "OSTEP"
+    files:
+      - path: books/Operating Systems - Three Easy Pieces.pdf
+        label: ""
+        page_offset: 21

@@ -1,0 +1,26 @@
+[project]
+name = "anki-rag"
+version = "0.1.0"
+description = "Keep Anki flashcards in sync with Obsidian notes via RAG cross-check"
+requires-python = ">=3.13"
+dependencies = [
+    "numpy>=2.4.6",
+    "openai>=2.43.0",
+    "pypdf>=6.13.3",
+    "python-dotenv>=1.2.2",
+    "pyyaml>=6.0.3",
+    "reportlab>=4.5.1",
+    "sentence-transformers>=5.6.0",
+]
+
+[project.scripts]
+anki-propose = "cli.propose:main"
+anki-commit = "cli.commit:main"
+anki-check-notes = "cli.check:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["cli", "rag", "sync", "reason", "commit"]
