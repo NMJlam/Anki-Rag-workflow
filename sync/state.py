@@ -160,6 +160,7 @@ def mark_cards_committed(
     cards: Iterable[CardState],
     *,
     anki_note_ids: dict[str, int] | None = None,
+    reject_other_proposals: bool = True,
 ) -> int:
     """Resolve matching pending cards as committed, or insert committed rows."""
     now = _utc_now()
@@ -224,19 +225,20 @@ def mark_cards_committed(
             committed_by_note.setdefault(card.note_rel_path, set()).add(card.content_hash)
             count += 1
 
-        for rel_path, hashes in committed_by_note.items():
-            placeholders = ",".join("?" for _ in hashes)
-            conn.execute(
-                f"""
-                UPDATE cards
-                   SET status = 'rejected',
-                       rejected_at = ?
-                 WHERE status = 'proposed'
-                   AND note_rel_path = ?
-                   AND card_content_hash NOT IN ({placeholders})
-                """,
-                (now, rel_path, *hashes),
-            )
+        if reject_other_proposals:
+            for rel_path, hashes in committed_by_note.items():
+                placeholders = ",".join("?" for _ in hashes)
+                conn.execute(
+                    f"""
+                    UPDATE cards
+                       SET status = 'rejected',
+                           rejected_at = ?
+                     WHERE status = 'proposed'
+                       AND note_rel_path = ?
+                       AND card_content_hash NOT IN ({placeholders})
+                    """,
+                    (now, rel_path, *hashes),
+                )
     return count
 
 

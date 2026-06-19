@@ -45,7 +45,7 @@ class VectorStore:
 
         sims = normed @ q_normed
         k = min(k, len(sims))
-        top_idx = np.argpartition(-sims, k)[:k]
+        top_idx = np.argpartition(-sims, k - 1)[:k]
         top_idx = top_idx[np.argsort(-sims[top_idx])]
 
         return [(float(sims[i]), self._metas[i]) for i in top_idx]

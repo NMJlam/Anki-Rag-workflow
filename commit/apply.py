@@ -317,6 +317,97 @@ def _remove_card_from_index(
     ]
 
 
+def _back_lines(answer: str) -> list[str]:
+    lines = [line.rstrip() for line in answer.splitlines() if line.strip()]
+    if not lines:
+        return ["- "]
+    if all(line.lstrip().startswith("- ") for line in lines):
+        return lines
+    return [
+        line if line.lstrip().startswith("- ") else f"- {line.lstrip()}"
+        for line in lines
+    ]
+
+
+def _append_card_body(
+    lines: list[str],
+    *,
+    question: str,
+    answer: str,
+    source: str,
+) -> None:
+    lines.append(f"Front: {question}")
+    lines.append("Back:")
+    lines.extend(_back_lines(answer))
+    lines.append(f'source: "{source}"')
+
+
+def _write_pending_cards_file(
+    path: Path,
+    cards: list[ParsedCard],
+    *,
+    title: str,
+    changed: bool = False,
+) -> None:
+    if not cards:
+        if path.exists():
+            path.unlink()
+        return
+
+    lines = [
+        title,
+        "# remaining unapplied entries from the last commit attempt",
+        "",
+    ]
+    for card in cards:
+        note_ref = f"[[{card.note_title}]]"
+        if changed and card.replaces_anki_note_id is not None:
+            lines.append("> [!warning] Replace existing card")
+            lines.append(
+                f"> -- card {card.replaces_anki_note_id} from {note_ref}      "
+                f"deck: {card.deck}"
+            )
+            lines.append(">")
+            lines.append(f"## ++ replace from {note_ref}      deck: {card.deck}")
+        elif changed:
+            lines.append(f"## ++ add from {note_ref}      deck: {card.deck}")
+        else:
+            lines.append(f"## ++ from {note_ref}      deck: {card.deck}")
+        _append_card_body(
+            lines,
+            question=card.question,
+            answer=card.answer,
+            source=card.source,
+        )
+        lines.append("")
+
+    path.write_text("\n".join(lines))
+
+
+def _write_pending_deletions_file(
+    path: Path,
+    deletions: list[ParsedDeletion],
+) -> None:
+    if not deletions:
+        if path.exists():
+            path.unlink()
+        return
+
+    lines = [
+        "# Deleted Cards — pending approval",
+        "# remaining unapplied entries from the last commit attempt",
+        "",
+    ]
+    for deletion in deletions:
+        lines.append(
+            f"## -- delete card {deletion.anki_note_id} from "
+            f"[[{deletion.note_title}]]      deck: {deletion.deck}"
+        )
+        lines.append("")
+
+    path.write_text("\n".join(lines))
+
+
 # ------------------------------------------------------------------
 # Main apply flow
 # ------------------------------------------------------------------
@@ -413,11 +504,16 @@ def apply_commit(
     log_entries.append("")
     committed_states: list[CardState] = []
     committed_note_ids: dict[str, int] = {}
+    pending_new_cards: list[ParsedCard] = []
+    pending_changed_cards: list[ParsedCard] = []
+    pending_deletions: list[ParsedDeletion] = []
+    had_failures = False
 
     # --- Changed cards: add replacement first, then delete old ---
     for card in changed_cards:
         if not card.deck:
             print(f"  SKIPPING [[{card.note_title}]] — no deck")
+            pending_changed_cards.append(card)
             continue
 
         c_hash = card_content_hash(card.source, card.answer)
@@ -435,9 +531,12 @@ def apply_commit(
             )
             print(f"  added card {note_id} → {card.deck} ({card.question[:50]}...)")
         except AnkiConnectError as exc:
-            print(f"  WARNING: add failed: {exc}")
+            print(f"  ADD FAILED: {exc}")
+            pending_changed_cards.append(card)
+            had_failures = True
             continue
 
+        delete_succeeded = True
         if card.replaces_anki_note_id is not None:
             print(
                 f"  deleting old card {card.replaces_anki_note_id} "
@@ -446,14 +545,25 @@ def apply_commit(
             try:
                 delete_notes([card.replaces_anki_note_id])
             except AnkiConnectError as exc:
-                print(f"    WARNING: delete failed after replacement add: {exc}")
-            else:
-                if rel_path:
-                    _remove_card_from_index(
-                        index,
-                        rel_path=rel_path,
-                        anki_note_id=card.replaces_anki_note_id,
-                    )
+                print(f"    DELETE FAILED after replacement add: {exc}")
+                print(
+                    "    replacement card was added; old-card deletion remains pending"
+                )
+                pending_deletions.append(ParsedDeletion(
+                    anki_note_id=card.replaces_anki_note_id,
+                    note_title=card.note_title,
+                    deck=card.deck,
+                ))
+                had_failures = True
+                delete_succeeded = False
+
+            if delete_succeeded and rel_path:
+                _remove_card_from_index(
+                    index,
+                    rel_path=rel_path,
+                    anki_note_id=card.replaces_anki_note_id,
+                )
+            if delete_succeeded:
                 log_entries.append(
                     f"-- deleted card {card.replaces_anki_note_id} from [[{card.note_title}]]"
                 )
@@ -490,6 +600,7 @@ def apply_commit(
     for card in new_cards:
         if not card.deck:
             print(f"  SKIPPING [[{card.note_title}]] — no deck (mark ← pick)")
+            pending_new_cards.append(card)
             continue
 
         c_hash = card_content_hash(card.source, card.answer)
@@ -505,7 +616,9 @@ def apply_commit(
             )
             print(f"  added card {note_id} → {card.deck} ({card.question[:50]}...)")
         except AnkiConnectError as exc:
-            print(f"  WARNING: add failed: {exc}")
+            print(f"  ADD FAILED: {exc}")
+            pending_new_cards.append(card)
+            had_failures = True
             continue
 
         # Update card state
@@ -541,34 +654,39 @@ def apply_commit(
         )
 
     # --- Deletions ---
-    if deletions:
-        del_ids = [d.anki_note_id for d in deletions]
+    for d in deletions:
         try:
-            delete_notes(del_ids)
-            print(f"  deleted {len(del_ids)} card(s) from Anki")
+            delete_notes([d.anki_note_id])
+            print(f"  deleted card {d.anki_note_id} from Anki")
         except AnkiConnectError as exc:
-            print(f"  WARNING: deletion failed: {exc}")
+            print(f"  DELETE FAILED for card {d.anki_note_id}: {exc}")
+            pending_deletions.append(d)
+            had_failures = True
+            continue
 
-        for d in deletions:
-            rel_path = _resolve_rel_path(d.note_title, index)
-            if rel_path:
-                _remove_card_from_index(
-                    index, rel_path=rel_path, anki_note_id=d.anki_note_id,
-                )
-                note_entry = index.get_note(rel_path)
-                if note_entry and not note_entry.cards:
-                    index.remove_note(rel_path)
-            log_entries.append(
-                f"-- deleted card {d.anki_note_id} from [[{d.note_title}]]"
+        rel_path = _resolve_rel_path(d.note_title, index)
+        if rel_path:
+            _remove_card_from_index(
+                index, rel_path=rel_path, anki_note_id=d.anki_note_id,
             )
+            note_entry = index.get_note(rel_path)
+            if note_entry and not note_entry.cards:
+                index.remove_note(rel_path)
+        log_entries.append(
+            f"-- deleted card {d.anki_note_id} from [[{d.note_title}]]"
+        )
 
     # ------------------------------------------------------------------
     # 5. Promote pending_file_hash → committed_file_hash for committed notes, then save
     # ------------------------------------------------------------------
+    remaining_card_proposals = len(pending_new_cards) + len(pending_changed_cards)
+    remaining = (
+        remaining_card_proposals + len(pending_deletions)
+    )
     committed_paths = {c.note_rel_path for c in committed_states}
     for rel_path in committed_paths:
         note_entry = index.get_note(rel_path)
-        if note_entry and note_entry.pending_file_hash:
+        if note_entry and note_entry.pending_file_hash and not remaining_card_proposals:
             note_entry.committed_file_hash = note_entry.pending_file_hash
             note_entry.pending_file_hash = None
 
@@ -577,6 +695,7 @@ def apply_commit(
             default_state_path(state_path),
             committed_states,
             anki_note_ids=committed_note_ids,
+            reject_other_proposals=not remaining_card_proposals,
         )
         print(f"  recorded {committed_count} committed card(s)")
 
@@ -584,29 +703,41 @@ def apply_commit(
     print(f"  updated {state_db_path(state_path)}")
 
     # ------------------------------------------------------------------
-    # 6. Write log + clear diff files
+    # 6. Write log + rewrite review files to only remaining entries
     # ------------------------------------------------------------------
-    log_entries.append("")
-    log_text = "\n".join(log_entries)
+    if len(log_entries) > 2:
+        log_entries.append("")
+        log_text = "\n".join(log_entries)
 
-    log_file = vault / "Anki sync log.md"
-    if log_file.exists():
-        existing = log_file.read_text()
-        log_file.write_text(existing + "\n" + log_text)
-    else:
-        log_file.write_text(log_text)
-    print(f"  appended to {log_file}")
+        log_file = vault / "Anki sync log.md"
+        if log_file.exists():
+            existing = log_file.read_text()
+            log_file.write_text(existing + "\n" + log_text)
+        else:
+            log_file.write_text(log_text)
+        print(f"  appended to {log_file}")
 
-    # Clear the diff files (entries have been applied)
-    if new_file.exists():
-        new_file.unlink()
-        print("  removed New cards.md")
-    if changed_file.exists():
-        changed_file.unlink()
-        print("  removed Changed cards.md")
-    if deleted_file.exists():
-        deleted_file.unlink()
-        print("  removed Deleted cards.md")
+    _write_pending_cards_file(
+        new_file,
+        pending_new_cards,
+        title="# New Cards — pending approval",
+    )
+    _write_pending_cards_file(
+        changed_file,
+        pending_changed_cards,
+        title="# Changed Cards — pending approval",
+        changed=True,
+    )
+    _write_pending_deletions_file(deleted_file, pending_deletions)
+
+    if remaining:
+        noun = "entry" if remaining == 1 else "entries"
+        print(f"  {remaining} unapplied {noun} remain in review file(s)")
+        if had_failures:
+            print("  partial commit complete — fix the issue and rerun anki-commit")
+        else:
+            print("  commit incomplete — resolve pending entries and rerun anki-commit")
+        return
 
     # ------------------------------------------------------------------
     # 7. Sync to AnkiWeb
