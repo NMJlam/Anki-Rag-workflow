@@ -1,6 +1,7 @@
 """SQLite lifecycle helpers for proposed, committed, and rejected cards."""
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import sqlite3
 from dataclasses import dataclass
@@ -38,13 +39,21 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _connect(db_path: str | Path) -> sqlite3.Connection:
+@contextlib.contextmanager
+def _connect(db_path: str | Path):
     path = state_db_path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
-    conn.execute("PRAGMA foreign_keys = ON")
-    init_db(conn)
-    return conn
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        init_db(conn)
+        yield conn
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def record_proposals(

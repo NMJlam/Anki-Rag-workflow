@@ -8,7 +8,9 @@ Run standalone:  python -m commit.anki  (lists decks + models as a smoke test)
 from __future__ import annotations
 
 import json
+import re
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -151,19 +153,23 @@ def cards_info(card_ids: list[int]) -> list[dict]:
     return _request("cardsInfo", cards=card_ids)
 
 
+def _backup_filename(deck: str) -> str:
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", deck)
+    return f"{safe_name or 'deck'}.apkg"
+
+
 def export_package(
-    deck: str = "Default",
+    deck: str,
     path: str | None = None,
     include_scheduling: bool = True,
 ) -> str:
-    """Export the collection as an .apkg backup.
+    """Export one deck as an .apkg backup.
 
     Returns the path where the backup was written.
     """
     if path is None:
-        from datetime import datetime
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        path = str(Path.home() / f"anki_backup_{ts}.apkg")
+        path = str(Path.home() / f"anki_backup_{ts}_{_backup_filename(deck)}")
 
     _request(
         "exportPackage",
@@ -172,6 +178,37 @@ def export_package(
         includeSched=include_scheduling,
     )
     return path
+
+
+def export_all_decks(
+    path: str | None = None,
+    include_scheduling: bool = True,
+) -> list[str]:
+    """Export every top-level deck so all cards/decks are backed up."""
+    decks = sorted(deck for deck in deck_names() if deck and "::" not in deck)
+    if not decks:
+        decks = sorted(deck for deck in deck_names() if deck)
+    if not decks:
+        raise AnkiConnectError("No Anki decks found to back up")
+
+    if path is None:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_dir = Path.home() / f"anki_backup_{ts}"
+    else:
+        backup_dir = Path(path)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    exported = []
+    for deck in decks:
+        export_path = backup_dir / _backup_filename(deck)
+        exported.append(
+            export_package(
+                deck,
+                path=str(export_path),
+                include_scheduling=include_scheduling,
+            )
+        )
+    return exported
 
 
 def sync() -> None:

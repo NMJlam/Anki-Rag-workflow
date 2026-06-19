@@ -63,6 +63,8 @@ def chat_json(
             temperature=temperature,
             response_format={"type": "json_object"},
         )
+        if not resp.choices:
+            raise ValueError("LLM returned empty choices list")
         raw = resp.choices[0].message.content or ""
         cleaned = _strip_fences(raw)
         try:
@@ -97,6 +99,8 @@ def chat_text(
         messages=messages,
         temperature=temperature,
     )
+    if not resp.choices:
+        raise ValueError("LLM returned empty choices list")
     return resp.choices[0].message.content or ""
 
 

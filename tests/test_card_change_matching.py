@@ -189,7 +189,8 @@ class CardChangeMatchingTests(unittest.TestCase):
 
         content = emit_changed_cards(proposals, "/tmp/vault", timestamp="2026-06-18 15:47")
 
-        self.assertIn("> [!warning] Replace existing card", content)
+        self.assertIn("> [!warning]", content)
+        self.assertIn("Replace existing card", content)
         self.assertIn("> -- card 123 from [[Virtualisation]]", content)
         self.assertIn('> old Q: "What is a TLB miss?"', content)
         self.assertIn('> old A: "A TLB miss is missing from the TLB."', content)

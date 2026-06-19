@@ -41,7 +41,7 @@ from .anki import (
     create_deck,
     delete_notes,
     ensure_model,
-    export_package,
+    export_all_decks,
     sync,
 )
 
@@ -139,6 +139,11 @@ def parse_diff_cards(content: str) -> list[ParsedCard]:
         # Skip non-card headers: # (title) and ### or deeper (audit sections)
         # Card-level ## headers are matched by regexes below
         if line.startswith("### ") or (line.startswith("# ") and not line.startswith("## ")):
+            i += 1
+            continue
+
+        # Skip xcheck lines (informational only, not parsed)
+        if line.strip().startswith("xcheck:"):
             i += 1
             continue
 
@@ -320,7 +325,7 @@ def apply_commit(
         return
 
     # ------------------------------------------------------------------
-    # 2. Compute affected decks + backup each one
+    # 2. Compute affected decks + back up all decks
     # ------------------------------------------------------------------
     needed_decks: set[str] = set()
     for c in new_cards:
@@ -333,14 +338,16 @@ def apply_commit(
         if d.deck:
             needed_decks.add(d.deck)
 
-    print("  backing up Anki collection ...")
+    print("  backing up full Anki collection ...")
     try:
-        for deck in sorted(needed_decks):
-            backup_path = export_package(deck=deck)
+        backup_paths = export_all_decks()
+        for backup_path in backup_paths:
             backup_file = Path(backup_path)
             if not backup_file.exists() or backup_file.stat().st_size == 0:
-                raise AnkiConnectError(f"Backup file is empty or missing for deck {deck}")
-            print(f"  backup saved: {backup_path}  (deck: {deck})")
+                raise AnkiConnectError(f"Backup file is empty or missing: {backup_path}")
+        print(f"  backup saved: {len(backup_paths)} deck package(s)")
+        for backup_path in backup_paths:
+            print(f"    {backup_path}")
     except AnkiConnectError as exc:
         print(f"  BACKUP FAILED: {exc}")
         print("  aborting commit — fix the issue and retry")
@@ -363,7 +370,7 @@ def apply_commit(
     committed_states: list[CardState] = []
     committed_note_ids: dict[str, int] = {}
 
-    # --- Changed cards: replace only listed old card ids, otherwise add ---
+    # --- Changed cards: delete old first, then add new ---
     for card in changed_cards:
         if not card.deck:
             print(f"  SKIPPING [[{card.note_title}]] — no deck")
@@ -373,15 +380,8 @@ def apply_commit(
         rel_path = _resolve_rel_path(card.note_title, index)
         source_note = rel_path or card.note_title
 
-        try:
-            note_id = add_note(
-                card.deck, card.question, card.answer, source_note, c_hash,
-            )
-            print(f"  added card {note_id} → {card.deck} ({card.question[:50]}...)")
-        except AnkiConnectError as exc:
-            print(f"  WARNING: add failed: {exc}")
-            continue
-
+        # Delete the old card first so the add doesn't fail as a duplicate
+        # when the replacement keeps the same Front text.
         if card.replaces_anki_note_id is not None:
             print(
                 f"  deleting old card {card.replaces_anki_note_id} "
@@ -401,6 +401,15 @@ def apply_commit(
                 log_entries.append(
                     f"-- deleted card {card.replaces_anki_note_id} from [[{card.note_title}]]"
                 )
+
+        try:
+            note_id = add_note(
+                card.deck, card.question, card.answer, source_note, c_hash,
+            )
+            print(f"  added card {note_id} → {card.deck} ({card.question[:50]}...)")
+        except AnkiConnectError as exc:
+            print(f"  WARNING: add failed: {exc}")
+            continue
 
         # Update card state
         if rel_path:

@@ -52,7 +52,10 @@ class VectorStore:
 
     def save(self, directory: str) -> None:
         os.makedirs(directory, exist_ok=True)
-        np.save(os.path.join(directory, "vectors.npy"), self._vectors)
+        if self._vectors is None:
+            np.save(os.path.join(directory, "vectors.npy"), np.empty((0, self.dim)))
+        else:
+            np.save(os.path.join(directory, "vectors.npy"), self._vectors)
         with open(os.path.join(directory, "meta.json"), "w") as f:
             json.dump({
                 "dim": self.dim,

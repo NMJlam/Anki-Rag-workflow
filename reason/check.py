@@ -156,7 +156,9 @@ def check_note(
     # Step 2: check each claim
     print(f"  checking {len(claims)} claim(s) ...")
     for claim_data in claims:
-        claim_text = claim_data["claim"]
+        claim_text = claim_data.get("claim", "")
+        if not claim_text:
+            continue
         query = claim_data.get("query", claim_text)
 
         passages = retrieve(query, k=5, config_path=config_path)

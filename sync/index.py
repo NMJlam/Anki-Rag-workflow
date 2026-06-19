@@ -6,6 +6,7 @@ details. ``card_state.sqlite`` is the source of truth.
 """
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,7 +18,7 @@ SCHEMA_VERSION = 2
 
 @dataclass
 class CardEntry:
-    anki_note_id: int
+    anki_note_id: int | None
     concept_key: str
     content_hash: str
     front: str
@@ -75,13 +76,21 @@ def state_db_path(state_path: str | Path) -> Path:
     return Path(state_path)
 
 
-def _connect(state_path: str | Path) -> sqlite3.Connection:
+@contextlib.contextmanager
+def _connect(state_path: str | Path):
     path = state_db_path(state_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
-    conn.execute("PRAGMA foreign_keys = ON")
-    init_db(conn)
-    return conn
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        init_db(conn)
+        yield conn
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def init_db(conn: sqlite3.Connection) -> None:

@@ -39,6 +39,9 @@ class CardProposal:
     replaces_anki_note_id: int | None = None
     replaces_front: str = ""
     replaces_answer: str = ""
+    verdict: str = ""          # consistent, contradiction, new_detail
+    verdict_reason: str = ""   # why the verdict was given
+    xcheck_citation: str = ""  # e.g. "OSTEP · vm-tlbs · p.7"
 
 
 @dataclass
@@ -225,6 +228,36 @@ For "keep" or "replace", existing_anki_note_id must be the matched existing card
 """
 
 
+CROSSCHECK_SYSTEM = """\
+You are a textbook cross-checker. Given a student's note proposition and
+relevant textbook passages (with citations), determine the relationship:
+
+- "consistent" — the textbook confirms the proposition, no issues.
+- "new_detail" — the proposition is correct and adds detail or nuance beyond
+  what the textbook covers, OR the textbook is consistent but the student's
+  note has expanded on a topic that was previously captured by a different card.
+- "contradiction" — the textbook directly contradicts the proposition. The
+  student's note has a factual error or a misleading simplification that the
+  textbook corrects.
+
+Reply with a JSON object:
+{
+  "verdict": "consistent" | "new_detail" | "contradiction",
+  "reason": "<one sentence explaining the verdict>",
+  "best_citation": "<the citation string of the most relevant passage, or null>"
+}
+
+Rules:
+- Be strict about contradictions. If the student says X but the textbook says
+  not-X, that is a contradiction.
+- "new_detail" is the default for edits/expansions that don't conflict with the
+  book. Use it when the student added information the textbook doesn't cover,
+  or when the student refined a previous understanding.
+- Use ONLY the provided passages as evidence. If the passages don't cover the
+  topic, default to "consistent" with a note that the topic is not covered.\
+"""
+
+
 # ------------------------------------------------------------------
 # Core logic
 # ------------------------------------------------------------------
@@ -366,8 +399,21 @@ def _semantic_card_changes(
     return matches
 
 
-def _validating_source(card: dict, *, config_path: str) -> str:
-    """Return the page-exact citation for the best validating textbook page."""
+@dataclass
+class CrossCheckResult:
+    """Result of cross-checking a card against textbook passages."""
+    citation: str
+    verdict: str       # consistent, contradiction, new_detail
+    reason: str
+
+
+def _crosscheck_card(
+    card: dict,
+    *,
+    config_path: str,
+    model: str = DEFAULT_MODEL,
+) -> CrossCheckResult:
+    """Retrieve textbook passages and ask the LLM for a cross-check verdict."""
     query = " ".join(
         part for part in [
             card.get("target", ""),
@@ -377,18 +423,62 @@ def _validating_source(card: dict, *, config_path: str) -> str:
         ] if part
     )
     if not query.strip():
-        return card.get("source", "")
+        return CrossCheckResult(
+            citation=card.get("source", ""),
+            verdict="consistent",
+            reason="no searchable content",
+        )
 
     try:
-        results = retrieve(query, k=1, config_path=config_path)
+        results = retrieve(query, k=3, config_path=config_path)
     except Exception as exc:
         print(f"      WARNING: citation lookup failed: {exc}")
-        return card.get("source", "")
+        return CrossCheckResult(
+            citation=card.get("source", ""),
+            verdict="consistent",
+            reason=f"RAG lookup failed: {exc}",
+        )
 
     if not results:
-        return card.get("source", "")
+        return CrossCheckResult(
+            citation=card.get("source", ""),
+            verdict="consistent",
+            reason="no textbook passages found",
+        )
 
-    return results[0]["citation"]
+    # Build passage text for the LLM
+    passage_text = "\n\n".join(
+        f"[{r['citation']}]\n{r['text']}" for r in results
+    )
+    proposition = card.get("source", "")
+    answer = card.get("A", "") or card.get("answer", "")
+
+    try:
+        result = chat_json([
+            {"role": "system", "content": CROSSCHECK_SYSTEM},
+            {"role": "user", "content": (
+                f"## Student's proposition\n{proposition}\n\n"
+                f"## Card answer\n{answer}\n\n"
+                f"## Textbook passages\n{passage_text}"
+            )},
+        ], model=model, temperature=0.0)
+    except Exception as exc:
+        print(f"      WARNING: cross-check LLM call failed: {exc}")
+        return CrossCheckResult(
+            citation=results[0]["citation"],
+            verdict="consistent",
+            reason=f"cross-check failed: {exc}",
+        )
+
+    verdict = result.get("verdict", "consistent")
+    if verdict not in {"consistent", "contradiction", "new_detail"}:
+        verdict = "consistent"
+
+    return CrossCheckResult(
+        citation=result.get("best_citation") or results[0]["citation"],
+        verdict=verdict,
+        reason=result.get("reason", ""),
+    )
 
 
 def generate_cards(note_content: str, *, model: str = DEFAULT_MODEL) -> dict:
@@ -453,11 +543,15 @@ def process_note(
 
     generated_cards = []
     for card in result.get("cards", []):
+        xcheck = _crosscheck_card(card, config_path=config_path, model=model)
         generated_cards.append({
             "target": card.get("target", ""),
             "question": card.get("Q", ""),
             "answer": card.get("A", ""),
-            "source": _validating_source(card, config_path=config_path),
+            "source": card.get("source", ""),
+            "verdict": xcheck.verdict,
+            "verdict_reason": xcheck.reason,
+            "xcheck_citation": xcheck.citation,
         })
 
     semantic_matches: dict[int, tuple[str, dict | None]] = {}
@@ -510,6 +604,9 @@ def process_note(
             replaces_answer=(
                 replacement.get("answer", "") if replacement else ""
             ),
+            verdict=card.get("verdict", ""),
+            verdict_reason=card.get("verdict_reason", ""),
+            xcheck_citation=card.get("xcheck_citation", ""),
         ))
 
     # Parse audit trail
