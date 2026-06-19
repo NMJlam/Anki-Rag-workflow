@@ -28,7 +28,7 @@ from .llm import chat_json, DEFAULT_MODEL
 class ClaimIssue:
     """A single factual claim in a note that has a problem."""
     claim: str                # what the student wrote
-    verdict: str              # "wrong", "imprecise", "unsupported"
+    verdict: str              # "wrong", "imprecise"
     correction: str           # what the textbook actually says
     citation: str | None       # e.g. "OSTEP · vm-tlbs · p.7"
     severity: str             # "error" or "warning"
@@ -76,11 +76,12 @@ passages (with citations), determine whether the claim is:
 - "imprecise" — partially right but uses wrong terminology, conflates concepts, \
 or overstates/understates something
 - "wrong" — the textbook directly contradicts the claim
-- "unsupported" — the passages don't cover this topic (not enough evidence)
+- "not_relevant" — the passages don't cover this topic, or the claim is true \
+but outside the scope of the uploaded book
 
 Reply with a JSON object:
 {
-  "verdict": "correct" | "imprecise" | "wrong" | "unsupported",
+  "verdict": "correct" | "imprecise" | "wrong" | "not_relevant",
   "correction": "<what the textbook actually says, or null if correct>",
   "explanation": "<one sentence explaining the issue, or null if correct>",
   "best_citation": "<the citation string of the most relevant passage, or null>"
@@ -92,8 +93,10 @@ space on the CPU" but the textbook says time sharing shares CPU *time*, that \
 is WRONG — not imprecise.
 - For "imprecise": the core idea is right but the wording is misleading or \
 sloppy in a way that would lose marks or cause confusion.
-- For "unsupported": only use this when the passages genuinely don't cover the \
-topic. Don't use it as a cop-out when the claim is clearly wrong.
+- For "not_relevant": use this when the uploaded book passages do not actually \
+address the claim. Do not warn just because the claim is outside the book.
+- Only mark "wrong" or "imprecise" when the provided passages give direct, \
+relevant evidence about the same topic.
 - Use ONLY the provided passages as evidence.\
 """
 
@@ -165,7 +168,7 @@ def check_note(
         result = check_claim(claim_text, passages, model=model)
 
         verdict = result.get("verdict", "correct")
-        if verdict == "correct":
+        if verdict in {"correct", "not_relevant", "unsupported"}:
             continue  # no issue
 
         severity = "error" if verdict == "wrong" else "warning"
