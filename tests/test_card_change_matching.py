@@ -7,15 +7,136 @@ from commit.apply import parse_diff_cards
 from reason.crosscheck import (
     CardProposal,
     NoteProposals,
+    _add_missing_markdown_list_cards,
     _card_identity_hash,
     _classify_card_change,
+    _merge_duplicate_question_cards,
     _semantic_card_changes,
+    _split_definition_list_cards,
 )
 from reason.emit import emit_changed_cards
 from sync.index import CardEntry, NoteEntry, SyncIndex, load_index, save_index
 
 
 class CardChangeMatchingTests(unittest.TestCase):
+    def test_splits_definition_list_card_into_list_and_definition_cards(self) -> None:
+        source = (
+            "**What are the states that a process can be in?**\n"
+            "1. **Initial State:** When the process is being created\n"
+            "2. **Running:** In the running state, the process is running on the CPU.\n"
+            "3. **Ready:** In the ready state, a process is ready to run but the OS "
+            "task scheduler has decided to not run it at this point in time.\n"
+            "4. **Blocked:** In a blocked state, a process has performed an operation "
+            "that makes it not ready to run until some other event has been performed.\n"
+            "5. **Final:** The process has exited but its resources have not been cleaned up."
+        )
+        result = _split_definition_list_cards({
+            "cards": [
+                {
+                    "target": "process states",
+                    "Q": "What are the states that a process can be in?",
+                    "A": (
+                        "- Initial State: When the process is being created\n"
+                        "- Running: In the running state, the process is running on the CPU.\n"
+                        "- Ready: In the ready state, a process is ready to run but the OS task scheduler has decided to not run it at this point in time.\n"
+                        "- Blocked: In a blocked state, a process has performed an operation that makes it not ready to run until some other event has been performed.\n"
+                        "- Final: The process has exited but its resources have not been cleaned up."
+                    ),
+                    "source": source,
+                }
+            ],
+            "pruned": [],
+            "not_self_contained": [],
+            "skipped": [],
+        })
+
+        self.assertEqual(len(result["cards"]), 6)
+        self.assertEqual(
+            result["cards"][0]["A"],
+            "- Initial State\n- Running\n- Ready\n- Blocked\n- Final",
+        )
+        self.assertEqual(
+            result["cards"][2]["Q"],
+            "What does it mean for a process to be in the Running state?",
+        )
+        self.assertEqual(
+            result["cards"][2]["A"],
+            "In the running state, the process is running on the CPU.",
+        )
+
+    def test_adds_missing_card_for_colon_introduced_markdown_list(self) -> None:
+        note = (
+            "At any point in time, the process can be described by its PCB state:\n"
+            "- The contents of CPU registers (Including the [[Instruction Pointer]] "
+            "and [[Stack Pointer]]). This is the register context.\n"
+            "- I/O information\n"
+            "- Pointers to the contents of its address space\n"
+        )
+
+        result = _add_missing_markdown_list_cards(
+            {
+                "cards": [],
+                "pruned": [],
+                "not_self_contained": [],
+                "skipped": [],
+            },
+            note,
+        )
+
+        self.assertEqual(len(result["cards"]), 1)
+        self.assertEqual(
+            result["cards"][0]["Q"],
+            "What does a process's PCB state include?",
+        )
+        self.assertEqual(
+            result["cards"][0]["A"],
+            "- The contents of CPU registers (Including the Instruction Pointer and Stack Pointer)\n"
+            "- I/O information\n"
+            "- Pointers to the contents of its address space",
+        )
+        self.assertEqual(result["cards"][0]["source"], note.rstrip())
+
+    def test_merges_same_question_same_source_into_list_card(self) -> None:
+        source = (
+            "The contents of CPU registers (Including the [[Instruction Pointer]] "
+            "and [[Stack Pointer]]). This is the register context."
+        )
+        result = _merge_duplicate_question_cards({
+            "cards": [
+                {
+                    "target": "Instruction Pointer",
+                    "Q": "What is included in a process's register context?",
+                    "A": (
+                        "A process's register context includes the "
+                        "Instruction Pointer."
+                    ),
+                    "source": source,
+                },
+                {
+                    "target": "Stack Pointer",
+                    "Q": "What is included in a process's register context?",
+                    "A": (
+                        "A process's register context includes the Stack Pointer."
+                    ),
+                    "source": source,
+                },
+            ],
+            "pruned": [],
+            "not_self_contained": [],
+            "skipped": [],
+        })
+
+        self.assertEqual(len(result["cards"]), 1)
+        self.assertEqual(
+            result["cards"][0]["target"],
+            "Instruction Pointer; Stack Pointer",
+        )
+        self.assertEqual(
+            result["cards"][0]["A"],
+            "- Instruction Pointer\n"
+            "- Stack Pointer",
+        )
+
     def test_classifies_exact_existing_card_as_keep(self) -> None:
         existing = {
             "anki_note_id": 123,
@@ -158,6 +279,40 @@ class CardChangeMatchingTests(unittest.TestCase):
             )
 
         self.assertEqual(matches[0], ("replace", existing))
+
+    def test_semantic_match_does_not_replace_definition_with_list_card(self) -> None:
+        existing = {
+            "anki_note_id": 123,
+            "front": "What does it mean for a process to be in the Running state?",
+            "answer": "In the running state, the process is running on the CPU.",
+            "source": "Old note",
+        }
+        new = {
+            "target": "process states",
+            "question": "What are the states that a process can be in?",
+            "answer": "- Initial State\n- Running\n- Ready\n- Blocked\n- Final",
+            "source": "Processes note",
+        }
+
+        with patch("reason.crosscheck.chat_json") as chat_json:
+            chat_json.return_value = {
+                "matches": [
+                    {
+                        "new_index": 0,
+                        "action": "replace",
+                        "existing_anki_note_id": 123,
+                        "reason": "incorrect broad match",
+                    }
+                ]
+            }
+
+            matches = _semantic_card_changes(
+                new_cards=[new],
+                existing_cards=[existing],
+                model="test-model",
+            )
+
+        self.assertEqual(matches[0], ("add", None))
 
     def test_changed_cards_emit_and_parse_replacements(self) -> None:
         proposals = [

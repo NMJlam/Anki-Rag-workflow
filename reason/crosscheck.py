@@ -10,6 +10,7 @@ Run standalone:  python -m reason.crosscheck [vault_path] [state_path]
 from __future__ import annotations
 
 import json
+import re
 import sys
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
@@ -93,7 +94,8 @@ cosmetic only: same meaning, zero new facts.
 
 ## Input contract
 
-You receive Obsidian markdown bullets. Treat **each proposition as one unit of work**.
+You receive Obsidian markdown bullets and short markdown list blocks. Treat **each
+proposition or list block as one unit of work**.
 
 - **Targets** are exactly three kinds:
   1. `[[wikilinks]]` — key concepts the user linked.
@@ -108,12 +110,21 @@ You receive Obsidian markdown bullets. Treat **each proposition as one unit of w
   invent a target.
 - Ignore stray markup (trailing `^^`, block IDs like `^abc123`, formatting symbols).
 - **No targets in a bullet** → skip it, list it as skipped.
+- A line ending in `:` followed by bullet items is a list proposition. Make a
+  card for the list when the intro names a concept, state, structure, category,
+  or mechanism. The answer should be the bullet items as one multi-bullet back.
 
 ## The core algorithm (run per proposition)
 
 1. **Split compound bullets.** If one bullet packs multiple independent claims (joined
    by `;`, `, and`, multiple sentences, etc.), split it at those boundaries into
    separate propositions, each carrying its own targets.
+   Exception: if the bullet gives an enumeration or parenthetical list of parts,
+   contents, examples, members, or included items for one concept, keep the list
+   together and make one list-answer card. Do not make repeated one-item cards
+   with the same question. Example: "X includes [[A]] and [[B]]" should produce
+   one card asking "What does X include?" with the answer:
+   "- A\n- B".
 2. **Parse** each proposition into its sentence and its list of targets.
 3. **Self-containment gate.** If the proposition depends on a referent not present in
    the proposition itself (`it`, `this`, `that`, `the above` with no in-bullet
@@ -123,7 +134,8 @@ You receive Obsidian markdown bullets. Treat **each proposition as one unit of w
    based on what the proposition says. Prefer questions that test the named theory
    directly — e.g. "What is X?", "Define X", "What does X do in this context?",
    "How does X relate to Y?". The answer is the information from the proposition,
-   written as a clear standalone sentence (not a fill-in-the-blank).
+   written as a clear standalone sentence or concise bullet list (not a
+   fill-in-the-blank).
 5. **Prune** the candidates using the pruning rules.
 6. **Keep** every survivor.
 
@@ -273,6 +285,258 @@ def _question_similarity(left: str, right: str) -> float:
     return SequenceMatcher(None, _normalize_text(left), _normalize_text(right)).ratio()
 
 
+def _answer_lines(answer: str) -> list[str]:
+    """Return answer items without Markdown bullet markers."""
+    lines = []
+    for raw_line in answer.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("- "):
+            line = line[2:].strip()
+        line = re.sub(r"^\d+\.\s+", "", line)
+        if line and line not in lines:
+            lines.append(line)
+    return lines
+
+
+_WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]")
+
+
+def _clean_markdown_text(text: str) -> str:
+    """Remove lightweight Obsidian markup while preserving readable text."""
+    text = _WIKILINK_RE.sub(lambda m: m.group(2) or m.group(1), text)
+    text = text.replace("==", "")
+    text = text.replace("**", "")
+    return " ".join(text.split())
+
+
+def _clean_list_item(text: str) -> str:
+    """Normalize a markdown bullet into a compact answer item."""
+    text = _clean_markdown_text(text)
+    text = re.sub(r"\s+This is\b.*$", "", text, flags=re.IGNORECASE)
+    return text.rstrip(".")
+
+
+def _list_question_and_target(intro: str) -> tuple[str, str]:
+    """Build a direct question for a colon-introduced markdown list."""
+    intro = _clean_markdown_text(intro).rstrip(":").strip()
+
+    described = re.search(
+        r"\bthe\s+(?P<subject>[A-Za-z][\w -]*?)\s+can be described by\s+"
+        r"(?P<owner>its|their|the)\s+(?P<target>.+)$",
+        intro,
+        flags=re.IGNORECASE,
+    )
+    if described:
+        subject = described.group("subject").strip().lower()
+        target = described.group("target").strip()
+        if subject == "process":
+            owner = f"a process's {target}"
+        else:
+            owner = f"the {subject}'s {target}"
+        return f"What does {owner} include?", target
+
+    includes = re.search(r"^(?P<target>.+?)\s+includes?$", intro, re.IGNORECASE)
+    if includes:
+        target = includes.group("target").strip()
+        return f"What does {target} include?", target
+
+    return f"What is included in {intro}?", intro
+
+
+def _markdown_list_cards(note_content: str) -> list[dict]:
+    """Extract simple colon-introduced markdown lists as list-answer cards."""
+    cards: list[dict] = []
+    lines = note_content.splitlines()
+    i = 0
+
+    while i < len(lines):
+        intro = lines[i].strip()
+        if not intro.endswith(":"):
+            i += 1
+            continue
+
+        block_lines = [lines[i].rstrip()]
+        items: list[str] = []
+        j = i + 1
+        while j < len(lines):
+            raw_line = lines[j]
+            stripped = raw_line.strip()
+            if not stripped:
+                break
+            if not stripped.startswith("- "):
+                break
+            block_lines.append(raw_line.rstrip())
+            item = _clean_list_item(stripped[2:])
+            if item:
+                items.append(item)
+            j += 1
+
+        if len(items) >= 2:
+            question, target = _list_question_and_target(intro)
+            cards.append({
+                "target": target,
+                "Q": question,
+                "A": "\n".join(f"- {item}" for item in items),
+                "source": "\n".join(block_lines),
+            })
+
+        i = max(j, i + 1)
+
+    return cards
+
+
+def _add_missing_markdown_list_cards(result: dict, note_content: str) -> dict:
+    """Add list-block cards that the LLM omitted."""
+    cards = [dict(card) for card in result.get("cards", [])]
+    existing_questions = {
+        _normalize_text(card.get("Q", ""))
+        for card in cards
+    }
+    existing_sources = {
+        _normalize_text(card.get("source", ""))
+        for card in cards
+    }
+
+    for card in _markdown_list_cards(note_content):
+        if _normalize_text(card["Q"]) in existing_questions:
+            continue
+        if _normalize_text(card["source"]) in existing_sources:
+            continue
+        cards.append(card)
+        existing_questions.add(_normalize_text(card["Q"]))
+        existing_sources.add(_normalize_text(card["source"]))
+
+    return {**result, "cards": cards}
+
+
+def _definition_item(line: str) -> tuple[str, str] | None:
+    """Parse a list item shaped like 'Term: definition'."""
+    line = _clean_markdown_text(line)
+    match = re.match(r"^(?P<term>[^:]{2,80}):\s+(?P<definition>.+)$", line)
+    if not match:
+        return None
+
+    term = match.group("term").strip()
+    definition = match.group("definition").strip()
+    if not term or not definition:
+        return None
+    return term.rstrip("."), definition.rstrip()
+
+
+def _definition_question(parent_question: str, term: str) -> str:
+    """Build a specific definition question for an item in a definition list."""
+    normalized_parent = _normalize_text(parent_question)
+    display_term = term
+    if normalized_parent.endswith("states that a process can be in?"):
+        state = re.sub(r"\s+state$", "", term, flags=re.IGNORECASE)
+        return f"What does it mean for a process to be in the {state} state?"
+    return f"What is {display_term}?"
+
+
+def _split_definition_list_cards(result: dict) -> dict:
+    """Split list cards with 'Term: definition' items into atomic cards.
+
+    The broad list card keeps only the terms. Each definition becomes a separate
+    card, so a single-state card can match existing cards independently.
+    """
+    split_cards: list[dict] = []
+
+    for card in result.get("cards", []):
+        items = [_definition_item(line) for line in _answer_lines(str(card.get("A", "")))]
+        definitions = [item for item in items if item is not None]
+        if len(definitions) < 2 or len(definitions) != len(items):
+            split_cards.append(card)
+            continue
+
+        list_card = dict(card)
+        list_card["target"] = card.get("target", "") or card.get("Q", "")
+        list_card["A"] = "\n".join(f"- {term}" for term, _ in definitions)
+        split_cards.append(list_card)
+
+        for term, definition in definitions:
+            split_cards.append({
+                "target": term,
+                "Q": _definition_question(str(card.get("Q", "")), term),
+                "A": definition,
+                "source": card.get("source", ""),
+            })
+
+    return {**result, "cards": split_cards}
+
+
+def _merge_duplicate_question_cards(result: dict) -> dict:
+    """Merge generated cards that ask the same question from the same source.
+
+    The LLM sometimes turns an enumerated proposition into repeated one-item
+    cards, e.g. "What is included in X?" -> one card for A and another for B.
+    Same-question/same-source duplicates are a strong signal that these should be
+    one list-answer card.
+    """
+    merged_cards: list[dict] = []
+    by_key: dict[tuple[str, str], dict] = {}
+
+    for card in result.get("cards", []):
+        question = card.get("Q", "")
+        source = card.get("source", "")
+        key = (_normalize_text(question), _normalize_text(source))
+        existing = by_key.get(key)
+        if existing is None:
+            copied = dict(card)
+            by_key[key] = copied
+            merged_cards.append(copied)
+            continue
+
+        existing_targets = _answer_lines(str(existing.get("target", "")))
+        new_targets = _answer_lines(str(card.get("target", "")))
+        targets = existing_targets + [
+            target for target in new_targets if target not in existing_targets
+        ]
+        if targets:
+            existing["target"] = "; ".join(targets)
+
+        answer_items = targets or _answer_lines(str(existing.get("A", "")))
+        if not targets:
+            for item in _answer_lines(str(card.get("A", ""))):
+                if item not in answer_items:
+                    answer_items.append(item)
+        if len(answer_items) > 1:
+            existing["A"] = "\n".join(f"- {item}" for item in answer_items)
+        elif answer_items:
+            existing["A"] = answer_items[0]
+
+    return {**result, "cards": merged_cards}
+
+
+def _is_enumeration_card(question: str, answer: str) -> bool:
+    normalized_question = _normalize_text(question)
+    if not re.search(r"\b(what are|which|list|name)\b", normalized_question):
+        return False
+    return len(_answer_lines(answer)) >= 2
+
+
+def _is_definition_question(question: str) -> bool:
+    normalized_question = _normalize_text(question)
+    return (
+        normalized_question.startswith("what is ")
+        or normalized_question.startswith("what does it mean ")
+        or normalized_question.startswith("define ")
+    )
+
+
+def _is_bad_enumeration_replacement(new_card: dict, existing: dict) -> bool:
+    """Return true when a broad list card is matched to one item definition."""
+    return (
+        _is_enumeration_card(
+            str(new_card.get("question", "")),
+            str(new_card.get("answer", "")),
+        )
+        and _is_definition_question(str(existing.get("front", "")))
+        and len(_answer_lines(str(existing.get("answer", "")))) <= 1
+    )
+
+
 def _classify_card_change(
     *,
     question: str,
@@ -393,6 +657,9 @@ def _semantic_card_changes(
         existing = existing_by_id.get(existing_id)
         if existing is None or existing_id in used_existing_ids:
             continue
+        if _is_bad_enumeration_replacement(new_cards[new_index], existing):
+            matches[new_index] = ("add", None)
+            continue
         used_existing_ids.add(existing_id)
         matches[new_index] = (action, existing)
 
@@ -490,7 +757,9 @@ def generate_cards(note_content: str, *, model: str = DEFAULT_MODEL) -> dict:
         {"role": "system", "content": GENERATE_CARDS_SYSTEM},
         {"role": "user", "content": note_content},
     ], model=model)
-    return result
+    result = _merge_duplicate_question_cards(result)
+    result = _split_definition_list_cards(result)
+    return _add_missing_markdown_list_cards(result, note_content)
 
 
 def process_note(
