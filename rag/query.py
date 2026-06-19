@@ -8,6 +8,9 @@ Reusable:   retrieve(query, k) -> list of {score, citation, book, label,
 from __future__ import annotations
 
 import argparse
+from functools import lru_cache
+
+import numpy as np
 
 from .config import load_config
 from .embedder import get_embedder
@@ -22,7 +25,56 @@ def format_citation(meta: dict) -> str:
     return " · ".join(parts)
 
 
+class Retriever:
+    """Reusable RAG retriever for one config/index/embedder combination."""
+
+    def __init__(self, config_path: str = "config.toml"):
+        cfg = load_config(config_path)
+        self.store = VectorStore.load(cfg.index_dir)
+        self.embedder = get_embedder(
+            cfg.embedder,
+            **({"model_name": cfg.model} if cfg.embedder.startswith("s") else {}),
+        )
+        if self.embedder.dim != self.store.dim:
+            raise SystemExit(
+                f"Embedder dim {self.embedder.dim} != index dim {self.store.dim}. "
+                f"You ingested with a different embedder ('{self.store.embedder_name}'). "
+                f"Re-ingest after changing the embedder in config.toml."
+            )
+        self._query_vectors: dict[str, np.ndarray] = {}
+
+    def retrieve(self, query: str, k: int = 5) -> list[dict]:
+        qvec = self._query_vectors.get(query)
+        if qvec is None:
+            qvec = self.embedder.encode([query])[0]
+            self._query_vectors[query] = qvec
+
+        results = []
+        for score, meta in self.store.search(qvec, k=k):
+            results.append({
+                "score": round(score, 4),
+                "citation": format_citation(meta),
+                "book": meta["book"],
+                "label": meta.get("label", ""),
+                "printed_page": meta["printed_page"],
+                "pdf_page": meta["pdf_page"],
+                "file": meta["file"],
+                "text": meta["text"],
+            })
+        return results
+
+
+@lru_cache(maxsize=8)
+def get_retriever(config_path: str = "config.toml") -> Retriever:
+    return Retriever(config_path)
+
+
 def retrieve(query: str, k: int = 5, config_path: str = "config.toml") -> list[dict]:
+    return get_retriever(str(config_path)).retrieve(query, k=k)
+
+
+def _retrieve_uncached(query: str, k: int = 5, config_path: str = "config.toml") -> list[dict]:
+    """Reference implementation for tests/debugging without process caching."""
     cfg = load_config(config_path)
     store = VectorStore.load(cfg.index_dir)
 

@@ -253,6 +253,7 @@ def check(
     reports = check_all_notes(
         vault_path,
         config_path=config_path,
+        state_path=app_config.state_path,
         paths=note_paths,
     )
 

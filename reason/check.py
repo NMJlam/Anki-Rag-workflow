@@ -11,9 +11,13 @@ time sharing actually shares CPU *time*, not space).
 """
 from __future__ import annotations
 
+import hashlib
 import re
+import sqlite3
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from rag.query import retrieve
@@ -39,6 +43,22 @@ class NoteReport:
     """All issues found in a single note."""
     rel_path: str
     issues: list[ClaimIssue] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class CheckCandidate:
+    rel_path: str
+    path: Path
+    content: str
+    content_hash: str
+
+
+def _sha256(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 # ------------------------------------------------------------------
@@ -93,6 +113,8 @@ space on the CPU" but the textbook says time sharing shares CPU *time*, that \
 is WRONG — not imprecise.
 - For "imprecise": the core idea is right but the wording is misleading or \
 sloppy in a way that would lose marks or cause confusion.
+- Do NOT mark a claim imprecise for grammar, style, or a close paraphrase. If \
+the correction only rewrites the same idea in textbook wording, mark it correct.
 - For "not_relevant": use this when the uploaded book passages do not actually \
 address the claim. Do not warn just because the claim is outside the book.
 - Only mark "wrong" or "imprecise" when the provided passages give direct, \
@@ -139,6 +161,32 @@ def check_claim(
     return result
 
 
+def _normalized_claim_text(text: str) -> str:
+    text = re.sub(r"[^\w\s]", " ", text.lower())
+    return " ".join(text.split())
+
+
+def _is_trivial_imprecision(claim: str, correction: str | None) -> bool:
+    """Return true when an imprecision correction is just a close paraphrase."""
+    if not correction:
+        return True
+
+    normalized_claim = _normalized_claim_text(claim)
+    normalized_correction = _normalized_claim_text(correction)
+    if not normalized_claim or not normalized_correction:
+        return False
+
+    if normalized_claim == normalized_correction:
+        return True
+
+    similarity = SequenceMatcher(
+        None,
+        normalized_claim,
+        normalized_correction,
+    ).ratio()
+    return similarity >= 0.74
+
+
 def check_note(
     rel_path: str,
     content: str,
@@ -170,12 +218,18 @@ def check_note(
         verdict = result.get("verdict", "correct")
         if verdict in {"correct", "not_relevant", "unsupported"}:
             continue  # no issue
+        correction = result.get("correction") or result.get("explanation", "")
+        if verdict == "imprecise" and _is_trivial_imprecision(
+            claim_text,
+            correction,
+        ):
+            continue
 
         severity = "error" if verdict == "wrong" else "warning"
         issue = ClaimIssue(
             claim=claim_text,
             verdict=verdict,
-            correction=result.get("correction") or result.get("explanation", ""),
+            correction=correction,
             citation=result.get("best_citation"),
             severity=severity,
         )
@@ -257,20 +311,137 @@ def check_broken_links(
     return reports
 
 
+def _all_note_files(vault: Path) -> list[tuple[Path, str]]:
+    from sync.vault import IGNORE_DIRS, IGNORE_FILES
+
+    files = []
+    for md_file in sorted(vault.rglob("*.md")):
+        rel = md_file.relative_to(vault)
+        if any(part in IGNORE_DIRS for part in rel.parts):
+            continue
+        if rel.name in IGNORE_FILES:
+            continue
+        files.append((md_file, str(rel).replace("\\", "/")))
+    return files
+
+
+def _changed_check_candidates(
+    vault: Path,
+    *,
+    state_path: str | Path,
+) -> list[CheckCandidate]:
+    from sync.index import init_db, state_db_path
+
+    rows = {}
+    db_path = state_db_path(state_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db_path) as conn:
+        init_db(conn)
+        for row in conn.execute(
+            """
+            SELECT rel_path, committed_file_hash, pending_file_hash,
+                   last_seen_file_hash
+              FROM notes
+            """
+        ).fetchall():
+            rows[row[0]] = {
+                "committed": row[1] or "",
+                "pending": row[2] or "",
+                "last_seen": row[3] or "",
+            }
+
+    candidates = []
+    for md_file, rel_str in _all_note_files(vault):
+        content = md_file.read_text(errors="replace")
+        content_hash = _sha256(content)
+        known = rows.get(rel_str)
+        if known and content_hash in {
+            known["committed"],
+            known["pending"],
+            known["last_seen"],
+        }:
+            continue
+        candidates.append(CheckCandidate(
+            rel_path=rel_str,
+            path=md_file,
+            content=content,
+            content_hash=content_hash,
+        ))
+    return candidates
+
+
+def _specific_check_candidates(vault: Path, paths: list[str]) -> list[CheckCandidate]:
+    candidates = []
+    for rel in paths:
+        full = vault / rel
+        if not full.exists():
+            print(f"  skipping {rel} (not found)")
+            continue
+        content = full.read_text(errors="replace")
+        candidates.append(CheckCandidate(
+            rel_path=rel,
+            path=full,
+            content=content,
+            content_hash=_sha256(content),
+        ))
+    return candidates
+
+
+def _mark_checked(
+    candidates: list[CheckCandidate],
+    reports: list[NoteReport],
+    *,
+    state_path: str | Path,
+) -> None:
+    from sync.vault import _resolve_deck
+    from sync.index import init_db, state_db_path
+
+    reports_by_path = {report.rel_path: report for report in reports}
+    clean = [
+        candidate for candidate in candidates
+        if not reports_by_path.get(candidate.rel_path, NoteReport(candidate.rel_path)).issues
+    ]
+    if not clean:
+        return
+
+    now = _utc_now()
+    db_path = state_db_path(state_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db_path) as conn:
+        init_db(conn)
+        for candidate in clean:
+            deck = _resolve_deck(candidate.rel_path, candidate.content)
+            conn.execute(
+                """
+                INSERT INTO notes (
+                    rel_path, deck, committed_file_hash, pending_file_hash,
+                    last_seen_file_hash, last_processed
+                )
+                VALUES (?, ?, '', NULL, ?, ?)
+                ON CONFLICT(rel_path) DO UPDATE SET
+                    deck = excluded.deck,
+                    last_seen_file_hash = excluded.last_seen_file_hash,
+                    last_processed = excluded.last_processed
+                """,
+                (candidate.rel_path, deck, candidate.content_hash, now),
+            )
+        conn.commit()
+
+
 def check_all_notes(
     vault_path: str | Path,
     *,
     model: str = DEFAULT_MODEL,
     config_path: str = "config.toml",
+    state_path: str | Path | None = None,
     paths: list[str] | None = None,
 ) -> list[NoteReport]:
     """Check all (or specific) notes in the vault for factual errors.
 
     If paths is given, only check those vault-relative paths.
-    Otherwise, check all .md files.
+    Otherwise, check notes whose current content hash has not already been
+    committed, proposed, or successfully checked.
     """
-    from sync.vault import IGNORE_DIRS, IGNORE_FILES
-
     vault = Path(vault_path).resolve()
     if not vault.is_dir():
         raise FileNotFoundError(f"Vault not found: {vault}")
@@ -278,28 +449,28 @@ def check_all_notes(
     reports = []
 
     if paths:
-        # Check specific notes
-        for rel in paths:
-            full = vault / rel
-            if not full.exists():
-                print(f"  skipping {rel} (not found)")
-                continue
-            content = full.read_text(errors="replace")
-            report = check_note(rel, content, model=model, config_path=config_path)
-            reports.append(report)
+        candidates = _specific_check_candidates(vault, paths)
     else:
-        # Check all notes
-        for md_file in sorted(vault.rglob("*.md")):
-            rel = md_file.relative_to(vault)
-            if any(part in IGNORE_DIRS for part in rel.parts):
-                continue
-            if rel.name in IGNORE_FILES:
-                continue
-            rel_str = str(rel).replace("\\", "/")
-            content = md_file.read_text(errors="replace")
-            report = check_note(
-                rel_str, content, model=model, config_path=config_path
-            )
-            reports.append(report)
+        if state_path is None:
+            from sync.config import load_app_config
+
+            state_path = load_app_config().state_path
+        candidates = _changed_check_candidates(vault, state_path=state_path)
+
+    if not candidates:
+        print("  no note content changes to check")
+        return reports
+
+    for candidate in candidates:
+        report = check_note(
+            candidate.rel_path,
+            candidate.content,
+            model=model,
+            config_path=config_path,
+        )
+        reports.append(report)
+
+    if state_path is not None:
+        _mark_checked(candidates, reports, state_path=state_path)
 
     return reports
