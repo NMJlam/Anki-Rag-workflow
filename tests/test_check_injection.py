@@ -43,6 +43,22 @@ class CheckInjectionTests(unittest.TestCase):
             self.assertLess(marker_idx, wrong_line_idx)
             self.assertEqual(wrong_line_idx, marker_idx + 6)
 
+    def test_empty_report_strips_stale_callouts(self) -> None:
+        with TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            note = vault / "note.md"
+            note.write_text(
+                "<!-- anki-check -->\n"
+                "> [!warning] Factual imprecise\n"
+                "> **You wrote:** old text\n"
+                "\n"
+                "Actual note text.\n"
+            )
+
+            _inject_callouts(vault, NoteReport("note.md"))
+
+            self.assertEqual(note.read_text(), "Actual note text.\n")
+
 
 if __name__ == "__main__":
     unittest.main()

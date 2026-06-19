@@ -260,8 +260,9 @@ def check(
     # Inject callouts into notes with issues
     injected = 0
     for report in reports:
+        # Rewriting clean checked notes removes stale callouts from earlier runs.
+        _inject_callouts(vault_path, report)
         if report.issues:
-            _inject_callouts(vault_path, report)
             injected += 1
 
     # Print summary

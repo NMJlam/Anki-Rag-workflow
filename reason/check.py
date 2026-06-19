@@ -93,8 +93,9 @@ You are a textbook fact-checker. Given a student's claim and relevant textbook \
 passages (with citations), determine whether the claim is:
 
 - "correct" — the textbook confirms it, no issues
-- "imprecise" — partially right but uses wrong terminology, conflates concepts, \
-or overstates/understates something
+- "imprecise" — the claim is not flatly contradicted, but its wording would \
+teach the wrong concept because it uses wrong terminology, conflates concepts, \
+or materially overstates/understates something
 - "wrong" — the textbook directly contradicts the claim
 - "not_relevant" — the passages don't cover this topic, or the claim is true \
 but outside the scope of the uploaded book
@@ -111,10 +112,31 @@ Rules:
 - Be strict about factual accuracy. If the student says "time sharing shares \
 space on the CPU" but the textbook says time sharing shares CPU *time*, that \
 is WRONG — not imprecise.
-- For "imprecise": the core idea is right but the wording is misleading or \
-sloppy in a way that would lose marks or cause confusion.
+- For "imprecise": the core idea is right but the wording is materially \
+misleading in a way that would lose marks or cause confusion. Do not use \
+"imprecise" for merely incomplete wording.
 - Do NOT mark a claim imprecise for grammar, style, or a close paraphrase. If \
 the correction only rewrites the same idea in textbook wording, mark it correct.
+- Do NOT mark a claim wrong just because the student used terse note wording. \
+Definitions like "scheduled: ready to running" and "scheduled means moved from \
+ready to running" have the same factual content.
+- Do NOT require a high-level note to list every trigger, example, exception, or \
+implementation state from the passage. If the student's statement is compatible \
+with the passage but incomplete, mark it correct unless the omission changes the \
+meaning or would cause a false answer on an exam.
+- Preserve the student's note style. Do NOT flag a claim just because a fuller \
+textbook answer would add surrounding mechanisms, trigger conditions, or \
+implementation details the student did not assert. Only flag it when the words \
+the student actually wrote are false or materially misleading.
+- Treat compatible simplifications as correct. If your correction starts by \
+agreeing with the student's claim and then adds "however", "but", "separately", \
+or API/implementation details, the verdict should usually be "correct".
+- Do NOT flag a claim just because the passage gives a more exact mechanism, \
+subcase, prerequisite, return value, cleanup rule, or data-structure placement. \
+Flag only if the student's claim is incompatible with that information.
+- Do NOT flag nonstandard labels such as "initial" or "final" merely because the \
+passage uses different labels, unless the passage directly contradicts the \
+student's meaning.
 - For "not_relevant": use this when the uploaded book passages do not actually \
 address the claim. Do not warn just because the claim is outside the book.
 - Only mark "wrong" or "imprecise" when the provided passages give direct, \
@@ -166,8 +188,34 @@ def _normalized_claim_text(text: str) -> str:
     return " ".join(text.split())
 
 
-def _is_trivial_imprecision(claim: str, correction: str | None) -> bool:
-    """Return true when an imprecision correction is just a close paraphrase."""
+_PEDANTIC_CORRECTION_PATTERNS = (
+    "also mentions",
+    "also switches",
+    "but the passage specifies",
+    "but this",
+    "does not explicitly define",
+    "doesn't explicitly define",
+    "not explicitly define",
+    "does not explicitly state",
+    "doesn't explicitly state",
+    "not explicitly state",
+    "exit status",
+    "final step",
+    "hardware initially saves",
+    "however",
+    "kernel stack",
+    "macros like",
+    "must pass a pointer",
+    "return value",
+    "separately tracks",
+    "specific registers",
+    "typically part",
+    "triggered by events",
+)
+
+
+def _is_close_paraphrase(claim: str, correction: str | None) -> bool:
+    """Return true when a correction is just a close paraphrase."""
     if not correction:
         return True
 
@@ -185,6 +233,38 @@ def _is_trivial_imprecision(claim: str, correction: str | None) -> bool:
         normalized_correction,
     ).ratio()
     return similarity >= 0.74
+
+
+def _is_pedantic_correction(correction: str | None) -> bool:
+    """Return true for textbook-meta warnings that do not identify a contradiction."""
+    if not correction:
+        return True
+
+    normalized_correction = _normalized_claim_text(correction)
+    return any(
+        pattern in normalized_correction
+        for pattern in _PEDANTIC_CORRECTION_PATTERNS
+    )
+
+
+def _should_suppress_issue(
+    verdict: str,
+    claim: str,
+    correction: str | None,
+) -> bool:
+    """Suppress issue reports that amount to wording or coverage nitpicks."""
+    if verdict not in {"wrong", "imprecise"}:
+        return False
+
+    if _is_close_paraphrase(claim, correction):
+        return True
+
+    return verdict == "imprecise" and _is_pedantic_correction(correction)
+
+
+def _is_trivial_imprecision(claim: str, correction: str | None) -> bool:
+    """Backward-compatible wrapper for existing tests and callers."""
+    return _is_close_paraphrase(claim, correction)
 
 
 def check_note(
@@ -219,7 +299,8 @@ def check_note(
         if verdict in {"correct", "not_relevant", "unsupported"}:
             continue  # no issue
         correction = result.get("correction") or result.get("explanation", "")
-        if verdict == "imprecise" and _is_trivial_imprecision(
+        if _should_suppress_issue(
+            verdict,
             claim_text,
             correction,
         ):
