@@ -16,6 +16,13 @@ from .store import VectorStore
 
 
 def chunk_page(text: str, chunk_chars: int, overlap: int) -> list[str]:
+    if chunk_chars <= 0:
+        raise ValueError("chunk_chars must be positive")
+    if overlap < 0:
+        raise ValueError("chunk_overlap must be non-negative")
+    if overlap >= chunk_chars:
+        raise ValueError("chunk_overlap must be smaller than chunk_chars")
+
     text = (text or "").strip()
     if not text or len(text) < 50:
         return []

@@ -31,6 +31,8 @@ class VectorStore:
         self._metas.extend(metas)
 
     def search(self, query_vec: np.ndarray, k: int = 5) -> list[tuple[float, dict]]:
+        if k <= 0:
+            return []
         if self._vectors is None or len(self._metas) == 0:
             return []
         # cosine similarity

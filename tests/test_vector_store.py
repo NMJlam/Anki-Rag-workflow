@@ -26,6 +26,13 @@ class VectorStoreTests(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0][1]["id"], "x")
 
+    def test_search_non_positive_k_returns_no_results(self) -> None:
+        store = VectorStore(dim=2)
+        store.add(np.array([[1.0, 0.0]]), [{"id": "x"}])
+
+        self.assertEqual(store.search(np.array([1.0, 0.0]), k=0), [])
+        self.assertEqual(store.search(np.array([1.0, 0.0]), k=-1), [])
+
 
 if __name__ == "__main__":
     unittest.main()
