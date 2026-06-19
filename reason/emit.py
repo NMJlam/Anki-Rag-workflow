@@ -25,8 +25,27 @@ def _verdict_symbol(verdict: str) -> str:
     if verdict == "contradiction":
         return "CONTRADICTION"
     if verdict == "new_detail":
-        return "adds detail"
+        return "NEW DETAIL"
     return "consistent \u2713"
+
+
+def _back_lines(answer: str) -> list[str]:
+    lines = [line.rstrip() for line in answer.splitlines() if line.strip()]
+    if not lines:
+        return ["- "]
+    if all(line.lstrip().startswith("- ") for line in lines):
+        return lines
+    return [
+        line if line.lstrip().startswith("- ") else f"- {line.lstrip()}"
+        for line in lines
+    ]
+
+
+def _append_card_body(lines: list[str], question: str, answer: str, source: str) -> None:
+    lines.append(f"Front: {question}")
+    lines.append("Back:")
+    lines.extend(_back_lines(answer))
+    lines.append(f'source: "{source}"')
 
 
 # ------------------------------------------------------------------
@@ -65,9 +84,12 @@ def emit_new_cards(
                 lines.append(
                     f"   xcheck: {proposal.xcheck_citation} — {verdict_symbol}"
                 )
-            lines.append(f"Q: {proposal.question}")
-            lines.append(f"A: {proposal.answer}")
-            lines.append(f'source: "{proposal.source}"')
+            _append_card_body(
+                lines,
+                proposal.question,
+                proposal.answer,
+                proposal.source,
+            )
             lines.append("")
 
     return "\n".join(lines)
@@ -109,9 +131,11 @@ def emit_changed_cards(
                     f"[[{note_title}]]      deck: {deck_str}"
                 )
                 if proposal.replaces_front:
-                    lines.append(f'> old Q: "{proposal.replaces_front}"')
+                    lines.append(f"> Front: {proposal.replaces_front}")
                 if proposal.replaces_answer:
-                    lines.append(f'> old A: "{proposal.replaces_answer}"')
+                    lines.append("> Back:")
+                    for answer_line in _back_lines(proposal.replaces_answer):
+                        lines.append(f"> {answer_line}")
                 if proposal.verdict_reason:
                     lines.append(f"> why: {proposal.verdict_reason}")
                 if proposal.xcheck_citation:
@@ -129,9 +153,12 @@ def emit_changed_cards(
                 lines.append(
                     f"   xcheck: {proposal.xcheck_citation} — {verdict_sym}"
                 )
-            lines.append(f"Q: {proposal.question}")
-            lines.append(f"A: {proposal.answer}")
-            lines.append(f'source: "{proposal.source}"')
+            _append_card_body(
+                lines,
+                proposal.question,
+                proposal.answer,
+                proposal.source,
+            )
             lines.append("")
 
     return "\n".join(lines)
@@ -165,8 +192,7 @@ def emit_deleted_cards(
                 f"## -- delete card {card.anki_note_id} from "
                 f"[[{note_title}]]      deck: {deck_str}"
             )
-            lines.append(f"Q: {card.front}")
-            lines.append(f"A: {card.answer}")
+            _append_card_body(lines, card.front, card.answer, card.source)
             lines.append("")
 
     return "\n".join(lines)

@@ -192,10 +192,13 @@ class CardChangeMatchingTests(unittest.TestCase):
         self.assertIn("> [!warning]", content)
         self.assertIn("Replace existing card", content)
         self.assertIn("> -- card 123 from [[Virtualisation]]", content)
-        self.assertIn('> old Q: "What is a TLB miss?"', content)
-        self.assertIn('> old A: "A TLB miss is missing from the TLB."', content)
+        self.assertIn("> Front: What is a TLB miss?", content)
+        self.assertIn("> Back:", content)
+        self.assertIn("> - A TLB miss is missing from the TLB.", content)
         self.assertIn("## ++ replace from [[Virtualisation]]", content)
         self.assertIn("## ++ add from [[Virtualisation]]", content)
+        self.assertIn("Front: What is a TLB miss?", content)
+        self.assertIn("Back:\n- A TLB miss is an uncached address translation.", content)
 
         parsed = parse_diff_cards(content)
         self.assertEqual(len(parsed), 2)
@@ -217,6 +220,24 @@ class CardChangeMatchingTests(unittest.TestCase):
         self.assertEqual(len(parsed), 1)
         self.assertEqual(parsed[0].note_title, "Virtualisation")
         self.assertEqual(parsed[0].replaces_anki_note_id, 123)
+
+    def test_parser_reads_front_back_blocks(self) -> None:
+        parsed = parse_diff_cards(
+            "## ++ from [[Virtualisation]]      deck: Virtualisation\n"
+            "Front: What is a TLB miss?\n"
+            "Back:\n"
+            "- An uncached address translation.\n"
+            "- It requires page-table lookup.\n"
+            'source: "OSTEP p.188"\n'
+        )
+
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0].question, "What is a TLB miss?")
+        self.assertEqual(
+            parsed[0].answer,
+            "- An uncached address translation.\n- It requires page-table lookup.",
+        )
+        self.assertEqual(parsed[0].source, "OSTEP p.188")
 
     def test_parser_keeps_legacy_add_header_compatible(self) -> None:
         parsed = parse_diff_cards(

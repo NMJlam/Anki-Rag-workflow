@@ -89,8 +89,14 @@ _Q_RE = re.compile(r"^Q:\s*(.+)$")
 # Matches: A: ...
 _A_RE = re.compile(r"^A:\s*(.+)$")
 
+# Matches: Front: ...
+_FRONT_RE = re.compile(r"^Front:\s*(.+)$")
+
+# Matches: Back:
+_BACK_RE = re.compile(r"^Back:\s*$")
+
 # Matches: source: "..."
-_SOURCE_RE = re.compile(r'^source:\s*"(.+)"\s*$')
+_SOURCE_RE = re.compile(r'^source:\s*"?(.*?)"?\s*$')
 
 # Matches: ## -- delete card 123 from [[NoteTitle]]      deck: SomeDeck
 _DELETE_HEADER_RE = re.compile(
@@ -204,6 +210,44 @@ def parse_diff_cards(content: str) -> list[ParsedCard]:
                 # Hit something unexpected — stop parsing this card
                 break
 
+            if question and answer:
+                cards.append(ParsedCard(
+                    note_title=current_title,
+                    deck=current_deck,
+                    question=question,
+                    answer=answer,
+                    source=source,
+                    replaces_anki_note_id=current_replaces_anki_note_id,
+                ))
+            continue
+
+        fm = _FRONT_RE.match(line)
+        if fm and current_title:
+            question = fm.group(1).strip()
+            answer_lines: list[str] = []
+            source = ""
+
+            i += 1
+            if i < len(lines) and _BACK_RE.match(lines[i]):
+                i += 1
+                while i < len(lines):
+                    sm = _SOURCE_RE.match(lines[i])
+                    if sm:
+                        source = sm.group(1)
+                        i += 1
+                        break
+                    if lines[i].startswith("## ") or lines[i].startswith("# "):
+                        break
+                    if lines[i].strip() == "" and answer_lines:
+                        i += 1
+                        continue
+                    if lines[i].strip() == "" and not answer_lines:
+                        i += 1
+                        continue
+                    answer_lines.append(lines[i].rstrip())
+                    i += 1
+
+            answer = "\n".join(answer_lines).strip()
             if question and answer:
                 cards.append(ParsedCard(
                     note_title=current_title,
@@ -370,7 +414,7 @@ def apply_commit(
     committed_states: list[CardState] = []
     committed_note_ids: dict[str, int] = {}
 
-    # --- Changed cards: delete old first, then add new ---
+    # --- Changed cards: add replacement first, then delete old ---
     for card in changed_cards:
         if not card.deck:
             print(f"  SKIPPING [[{card.note_title}]] — no deck")
@@ -380,8 +424,20 @@ def apply_commit(
         rel_path = _resolve_rel_path(card.note_title, index)
         source_note = rel_path or card.note_title
 
-        # Delete the old card first so the add doesn't fail as a duplicate
-        # when the replacement keeps the same Front text.
+        try:
+            note_id = add_note(
+                card.deck,
+                card.question,
+                card.answer,
+                source_note,
+                c_hash,
+                allow_duplicate=card.replaces_anki_note_id is not None,
+            )
+            print(f"  added card {note_id} → {card.deck} ({card.question[:50]}...)")
+        except AnkiConnectError as exc:
+            print(f"  WARNING: add failed: {exc}")
+            continue
+
         if card.replaces_anki_note_id is not None:
             print(
                 f"  deleting old card {card.replaces_anki_note_id} "
@@ -390,7 +446,7 @@ def apply_commit(
             try:
                 delete_notes([card.replaces_anki_note_id])
             except AnkiConnectError as exc:
-                print(f"    WARNING: delete failed: {exc}")
+                print(f"    WARNING: delete failed after replacement add: {exc}")
             else:
                 if rel_path:
                     _remove_card_from_index(
@@ -401,15 +457,6 @@ def apply_commit(
                 log_entries.append(
                     f"-- deleted card {card.replaces_anki_note_id} from [[{card.note_title}]]"
                 )
-
-        try:
-            note_id = add_note(
-                card.deck, card.question, card.answer, source_note, c_hash,
-            )
-            print(f"  added card {note_id} → {card.deck} ({card.question[:50]}...)")
-        except AnkiConnectError as exc:
-            print(f"  WARNING: add failed: {exc}")
-            continue
 
         # Update card state
         if rel_path:

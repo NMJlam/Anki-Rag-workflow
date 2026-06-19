@@ -100,10 +100,13 @@ def add_note(
     back: str,
     source_note: str,
     content_hash: str,
+    *,
+    allow_duplicate: bool = False,
 ) -> int:
     """Add a single note. Returns the new Anki note ID.
 
-    allowDuplicate=false so re-running won't double-add.
+    allowDuplicate defaults false so re-running won't double-add. Replacement
+    commits pass true so the new note can be created before deleting the old one.
     """
     note_id = _request(
         "addNote",
@@ -117,7 +120,7 @@ def add_note(
                 "ContentHash": content_hash,
             },
             "options": {
-                "allowDuplicate": False,
+                "allowDuplicate": allow_duplicate,
                 "duplicateScope": "deck",
                 "duplicateScopeOptions": {
                     "deckName": deck,
