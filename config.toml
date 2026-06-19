@@ -9,6 +9,9 @@ state = "data/card_state.sqlite"
 # Textbook/RAG config. PDFs under books dir are discovered automatically.
 embedder = "sentence-transformers"
 model = "BAAI/bge-small-en-v1.5"
+# "auto" uses Apple Metal/MPS on Apple Silicon when PyTorch supports it.
+embedder_device = "auto"
+embed_batch_size = 32
 index_dir = "data/index"
 chunk_chars = 1200
 chunk_overlap = 200

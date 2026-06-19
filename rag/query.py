@@ -12,7 +12,7 @@ from functools import lru_cache
 
 import numpy as np
 
-from .config import load_config
+from .config import embedder_kwargs, load_config
 from .embedder import get_embedder
 from .store import VectorStore
 
@@ -31,10 +31,7 @@ class Retriever:
     def __init__(self, config_path: str = "config.toml"):
         cfg = load_config(config_path)
         self.store = VectorStore.load(cfg.index_dir)
-        self.embedder = get_embedder(
-            cfg.embedder,
-            **({"model_name": cfg.model} if cfg.embedder.startswith("s") else {}),
-        )
+        self.embedder = get_embedder(cfg.embedder, **embedder_kwargs(cfg))
         if self.embedder.dim != self.store.dim:
             raise SystemExit(
                 f"Embedder dim {self.embedder.dim} != index dim {self.store.dim}. "
@@ -78,8 +75,7 @@ def _retrieve_uncached(query: str, k: int = 5, config_path: str = "config.toml")
     cfg = load_config(config_path)
     store = VectorStore.load(cfg.index_dir)
 
-    embedder = get_embedder(cfg.embedder, **({"model_name": cfg.model}
-                                            if cfg.embedder.startswith("s") else {}))
+    embedder = get_embedder(cfg.embedder, **embedder_kwargs(cfg))
     if embedder.dim != store.dim:
         raise SystemExit(
             f"Embedder dim {embedder.dim} != index dim {store.dim}. "

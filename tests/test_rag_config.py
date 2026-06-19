@@ -18,6 +18,8 @@ class RagConfigTests(unittest.TestCase):
             config_path.write_text(
                 "[rag]\n"
                 'embedder = "hashing"\n'
+                'embedder_device = "cpu"\n'
+                'embed_batch_size = 16\n'
                 'index_dir = "data/test_index"\n'
                 'books_dir = "books"\n'
                 "\n"
@@ -30,6 +32,8 @@ class RagConfigTests(unittest.TestCase):
             cfg = load_config(config_path)
 
             self.assertEqual(cfg.embedder, "hashing")
+            self.assertEqual(cfg.embedder_device, "cpu")
+            self.assertEqual(cfg.embed_batch_size, 16)
             self.assertEqual(cfg.index_dir, str((root / "data" / "test_index").resolve()))
             self.assertEqual([book.name for book in cfg.books], ["OSTEP", "Other"])
             self.assertEqual(cfg.books[0].files[0].page_offset, 21)

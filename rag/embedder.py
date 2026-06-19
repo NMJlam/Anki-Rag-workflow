@@ -27,16 +27,44 @@ class Embedder(ABC):
 class SentenceTransformerEmbedder(Embedder):
     """Real semantic embeddings via sentence-transformers (runs locally)."""
 
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+    def __init__(
+        self,
+        model_name: str = "all-MiniLM-L6-v2",
+        device: str = "auto",
+        batch_size: int = 32,
+    ):
         from sentence_transformers import SentenceTransformer
 
         self.model_name = model_name
-        self._model = SentenceTransformer(model_name)
+        self.device = _resolve_torch_device(device)
+        self.batch_size = batch_size
+        self._model = SentenceTransformer(model_name, device=self.device)
         self.dim = self._model.get_embedding_dimension()
 
     def encode(self, texts: list[str]) -> np.ndarray:
-        return self._model.encode(texts, show_progress_bar=False,
-                                  convert_to_numpy=True)
+        return self._model.encode(
+            texts,
+            show_progress_bar=False,
+            convert_to_numpy=True,
+            batch_size=self.batch_size,
+        )
+
+
+def _resolve_torch_device(requested: str) -> str:
+    requested = (requested or "auto").lower()
+    if requested != "auto":
+        return requested
+
+    try:
+        import torch
+    except ImportError:
+        return "cpu"
+
+    if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        return "mps"
+    if torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
 
 
 class HashingEmbedder(Embedder):

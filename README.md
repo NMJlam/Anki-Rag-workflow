@@ -59,6 +59,8 @@ state = "data/card_state.sqlite"
 books_dir = "books"
 index_dir = "data/index"
 embedder = "sentence-transformers"
+embedder_device = "auto"  # uses Apple Metal/MPS on Apple Silicon when available
+embed_batch_size = 32
 ```
 
 Relative paths in `config.toml` are resolved from the config file's directory.

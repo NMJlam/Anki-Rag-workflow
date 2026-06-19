@@ -23,10 +23,22 @@ class Book:
 class Config:
     embedder: str = "sentence-transformers"
     model: str = "all-MiniLM-L6-v2"
+    embedder_device: str = "auto"
+    embed_batch_size: int = 32
     index_dir: str = "data/index"
     chunk_chars: int = 1200
     chunk_overlap: int = 200
     books: list[Book] = field(default_factory=list)
+
+
+def embedder_kwargs(cfg: Config) -> dict:
+    if not cfg.embedder.startswith("s"):
+        return {}
+    return {
+        "model_name": cfg.model,
+        "device": cfg.embedder_device,
+        "batch_size": cfg.embed_batch_size,
+    }
 
 
 def _as_list(value: object) -> list:
@@ -81,6 +93,8 @@ def load_config(path: str | Path = "config.toml") -> Config:
     cfg = Config(
         embedder=raw_rag.get("embedder", "sentence-transformers"),
         model=raw_rag.get("model", "all-MiniLM-L6-v2"),
+        embedder_device=str(raw_rag.get("embedder_device", "auto")),
+        embed_batch_size=int(raw_rag.get("embed_batch_size", 32)),
         index_dir=str(raw_rag.get("index_dir", "data/index")),
         chunk_chars=int(raw_rag.get("chunk_chars", 1200)),
         chunk_overlap=int(raw_rag.get("chunk_overlap", 200)),

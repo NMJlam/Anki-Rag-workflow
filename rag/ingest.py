@@ -10,7 +10,7 @@ import sys
 
 from pypdf import PdfReader
 
-from .config import Config, load_config
+from .config import Config, embedder_kwargs, load_config
 from .embedder import get_embedder
 from .store import VectorStore
 
@@ -39,8 +39,7 @@ def chunk_page(text: str, chunk_chars: int, overlap: int) -> list[str]:
 
 
 def ingest(cfg: Config) -> VectorStore:
-    embedder = get_embedder(cfg.embedder, **({"model_name": cfg.model}
-                                            if cfg.embedder.startswith("s") else {}))
+    embedder = get_embedder(cfg.embedder, **embedder_kwargs(cfg))
     store = VectorStore(dim=embedder.dim, embedder_name=embedder.model_name)
 
     texts: list[str] = []
@@ -81,7 +80,8 @@ def ingest(cfg: Config) -> VectorStore:
     if not texts:
         raise SystemExit("No text ingested. Check books_dir and book overrides in config.toml.")
 
-    print(f"  embedding {len(texts)} chunks with {embedder.model_name} ...")
+    device = getattr(embedder, "device", "cpu")
+    print(f"  embedding {len(texts)} chunks with {embedder.model_name} on {device} ...")
     vectors = embedder.encode(texts)
     store.add(vectors, metas)
     store.save(cfg.index_dir)
